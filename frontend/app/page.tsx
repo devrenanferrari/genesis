@@ -8,42 +8,46 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
 
-  // Ao carregar a página, verifica se já existe user_id no localStorage
+  // Ao carregar a página, tenta recuperar o userId do localStorage
   useEffect(() => {
     const storedId = localStorage.getItem("user_id");
     if (storedId) setUserId(storedId);
   }, []);
 
   async function handleGenerate() {
-    if (!prompt.trim()) return; // evita enviar prompt vazio
     setLoading(true);
 
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt,
-        ...(userId ? { user_id: userId } : {}) // envia user_id somente se existir
-      })
-    });
+    // Monta o corpo da requisição
+    const body: any = { prompt };
+    if (userId) body.user_id = userId;
 
-    if (!res.ok) {
-      const err = await res.json();
-      setOutput(`Erro no backend: ${JSON.stringify(err)}`);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText);
+      }
+
+      const data = await res.json();
+
+      // Salva user_id no localStorage se for novo
+      if (!userId && data.user_id) {
+        localStorage.setItem("user_id", data.user_id);
+        setUserId(data.user_id);
+      }
+
+      setOutput(data.llm_output);
+    } catch (err: any) {
+      console.error("Erro no backend:", err.message);
+      setOutput(`Erro no backend: ${err.message}`);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    const data = await res.json();
-    setOutput(data.llm_output);
-
-    // Salva user_id retornado para futuras requisições
-    if (!userId && data.user_id) {
-      localStorage.setItem("user_id", data.user_id);
-      setUserId(data.user_id);
-    }
-
-    setLoading(false);
   }
 
   return (
@@ -57,7 +61,7 @@ export default function Home() {
       />
       <button
         onClick={handleGenerate}
-        disabled={loading}
+        disabled={loading || !prompt.trim()}
         className="mt-2 px-4 py-2 bg-blue-600 text-white rounded"
       >
         {loading ? "Gerando..." : "Gerar Projeto"}
@@ -65,12 +69,7 @@ export default function Home() {
 
       <div className="mt-6">
         <h2 className="font-semibold">Saída do LLM</h2>
-        <Editor
-          height="60vh"
-          defaultLanguage="text"
-          value={output}
-          options={{ readOnly: true }}
-        />
+        <Editor height="60vh" defaultLanguage="text" value={output} />
       </div>
     </div>
   );

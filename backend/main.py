@@ -1,10 +1,10 @@
 import os
 import uuid
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import openai
-from supabase import create_client
+from supabase import create_client, Client
 
 # =========================
 # Variáveis de ambiente
@@ -21,7 +21,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 # =========================
 # Cliente Supabase
 # =========================
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =========================
 # FastAPI app
@@ -48,7 +48,7 @@ app.add_middleware(
 # Modelos Pydantic
 # =========================
 class GenRequest(BaseModel):
-    user_id: str
+    user_id: str | None = None  # opcional, gera UUID se não enviar
     prompt: str
 
 # =========================
@@ -56,30 +56,35 @@ class GenRequest(BaseModel):
 # =========================
 @app.post("/generate")
 def generate(req: GenRequest):
-    # Garante que user_id seja UUID válido
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="O prompt não pode estar vazio.")
+
+    # Gera UUID se não houver user_id
+    user_id = req.user_id or str(uuid.uuid4())
+
     try:
-        user_id = str(uuid.UUID(req.user_id))
-    except ValueError:
-        user_id = str(uuid.uuid4())
+        # Chamada OpenAI (nova API >=1.0.0)
+        response = openai.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": "Você é um gerador de código confiável."},
+                {"role": "user", "content": req.prompt}
+            ],
+            temperature=0.2,
+            max_tokens=2000
+        )
+        llm_output = response.choices[0].message.content
 
-    # Chamada OpenAI usando API nova
-    response = openai.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": "Você é um gerador de código confiável."},
-            {"role": "user", "content": req.prompt}
-        ],
-        temperature=0.2,
-        max_tokens=2000
-    )
+        # Salva no Supabase
+        supabase.table("projects").insert({
+            "user_id": user_id,
+            "prompt": req.prompt,
+            "llm_output": llm_output
+        }).execute()
 
-    llm_output = response.choices[0].message.content
+        return {"user_id": user_id, "llm_output": llm_output}
 
-    # Salva no Supabase
-    supabase.table("projects").insert({
-        "user_id": user_id,
-        "prompt": req.prompt,
-        "llm_output": llm_output
-    }).execute()
-
-    return {"llm_output": llm_output, "user_id": user_id}
+    except openai.error.OpenAIError as e:
+        raise HTTPException(status_code=500, detail=f"Erro OpenAI: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {e}")

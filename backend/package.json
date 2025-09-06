@@ -2,11 +2,10 @@
   "name": "genesis-backend",
   "version": "1.0.0",
   "description": "Genesis AI Project Generator Backend",
-  "main": "dist/server.js",
+  "main": "src/server.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "tsx src/server.ts"
   },
   "dependencies": {
     "express": "^4.18.2",

@@ -48,7 +48,7 @@ app.add_middleware(
 # Modelos Pydantic
 # =========================
 class GenRequest(BaseModel):
-    user_id: str | None = None  # opcional, gera UUID se não enviar
+    user_id: str | None = None
     prompt: str
 
 # =========================
@@ -56,14 +56,18 @@ class GenRequest(BaseModel):
 # =========================
 @app.post("/generate")
 def generate(req: GenRequest):
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="O prompt não pode estar vazio.")
-
-    # Gera UUID se não houver user_id
-    user_id = req.user_id or str(uuid.uuid4())
-
+    # Gera UUID se user_id não for fornecido
+    user_id = req.user_id
     try:
-        # Chamada OpenAI (nova API >=1.0.0)
+        if not user_id:
+            user_id = str(uuid.uuid4())
+        else:
+            uuid.UUID(user_id)  # valida UUID enviado
+    except ValueError:
+        user_id = str(uuid.uuid4())
+
+    # Chamada OpenAI
+    try:
         response = openai.chat.completions.create(
             model="gpt-4.1",
             messages=[
@@ -74,17 +78,17 @@ def generate(req: GenRequest):
             max_tokens=2000
         )
         llm_output = response.choices[0].message.content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro OpenAI: {e}")
 
-        # Salva no Supabase
+    # Salva no Supabase
+    try:
         supabase.table("projects").insert({
             "user_id": user_id,
             "prompt": req.prompt,
             "llm_output": llm_output
         }).execute()
-
-        return {"user_id": user_id, "llm_output": llm_output}
-
-    except openai.error.OpenAIError as e:
-        raise HTTPException(status_code=500, detail=f"Erro OpenAI: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro Supabase: {e}")
+
+    return {"llm_output": llm_output, "user_id": user_id}

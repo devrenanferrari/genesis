@@ -3,10 +3,6 @@ import cors from "cors"
 import dotenv from "dotenv"
 import { createClient } from "@supabase/supabase-js"
 import OpenAI from "openai"
-import archiver from "archiver"
-import { createWriteStream } from "fs"
-import { tmpdir } from "os"
-import { join } from "path"
 
 dotenv.config()
 
@@ -168,9 +164,9 @@ app.get("/projects/:user_id", async (req, res) => {
   }
 })
 
-app.post("/generate_project", async (req, res) => {
+const generateProject = async (req: express.Request, res: express.Response) => {
   try {
-    const { user_id, prompt }: GenRequest = req.body
+    const { user_id, prompt } = req.body
 
     console.log(`[DEBUG] Received request: user_id=${user_id}, prompt=${prompt?.substring(0, 50)}...`)
 
@@ -227,37 +223,21 @@ app.post("/generate_project", async (req, res) => {
       // Continue even if database save fails
     }
 
-    // Create ZIP file
-    const zipPath = join(tmpdir(), `project-${Date.now()}.zip`)
-    const output = createWriteStream(zipPath)
-    const archive = archiver("zip", { zlib: { level: 9 } })
-
-    archive.pipe(output)
-
-    for (const [filename, content] of Object.entries(files)) {
-      archive.append(content, { name: filename })
-    }
-
-    await archive.finalize()
-
     console.log(`[DEBUG] Successfully generated project with ${Object.keys(files).length} files`)
     res.json({
       user_id,
       llm_output: content,
-      project_zip_url: zipPath,
       files,
     })
   } catch (error: any) {
     console.log(`[ERROR] generate_project failed: ${error.message}`)
     res.status(500).json({ detail: `Erro no backend: ${error.message}` })
   }
-})
+}
 
-app.post("/generate", async (req, res) => {
-  // Redirect to the main generate_project endpoint
-  req.url = "/generate_project"
-  return app._router.handle(req, res, () => {})
-})
+app.post("/generate_project", generateProject)
+
+app.post("/generate", generateProject)
 
 app.listen(PORT, () => {
   console.log(`Genesis backend running on port ${PORT}`)

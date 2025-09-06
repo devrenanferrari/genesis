@@ -47,6 +47,14 @@ class GenRequest(BaseModel):
     user_id: str | None = None
     prompt: str
 
+@app.get("/")
+def root():
+    return {"message": "Genesis API is running", "status": "ok"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "openai_configured": bool(openai.api_key), "supabase_configured": bool(SUPABASE_URL and SUPABASE_KEY)}
+
 @app.post("/auth/login")
 def login(req: LoginRequest):
     try:
@@ -129,8 +137,13 @@ def get_user_projects(user_id: str):
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
     try:
+        print(f"[DEBUG] Received request: user_id={req.user_id}, prompt={req.prompt[:50]}...")  # Added debug logging
+        
         if not req.user_id:
             raise HTTPException(status_code=401, detail="User ID required")
+
+        if not openai.api_key:
+            raise HTTPException(status_code=500, detail="OpenAI API key not configured")
 
         # Solicita ao LLM os arquivos separados do projeto
         system_msg = (
@@ -139,6 +152,8 @@ def generate_project(req: GenRequest):
             "Exemplo de resposta JSON: {\"App.js\": \"conteúdo do App.js\", \"index.html\": \"conteúdo do index.html\"} "
             "Inclua também um README.md explicando o projeto."
         )
+        
+        print("[DEBUG] Calling OpenAI API...")  # Added debug logging
         response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -151,20 +166,28 @@ def generate_project(req: GenRequest):
 
         # Extrai resposta do LLM
         content = response.choices[0].message.content
+        print(f"[DEBUG] OpenAI response received, length: {len(content)}")  # Added debug logging
 
         # Tenta converter em JSON
         try:
             files = json.loads(content)
-        except Exception:
+            print(f"[DEBUG] Successfully parsed JSON with {len(files)} files")  # Added debug logging
+        except Exception as json_error:
+            print(f"[DEBUG] JSON parsing failed: {json_error}")  # Added debug logging
             # Se falhar, coloca tudo em App.js
             files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
 
-        # Salva no Supabase
-        supabase.table("projects").insert({
-            "user_id": req.user_id,
-            "prompt": req.prompt,
-            "llm_output": content
-        }).execute()
+        try:
+            print("[DEBUG] Saving to Supabase...")
+            supabase.table("projects").insert({
+                "user_id": req.user_id,
+                "prompt": req.prompt,
+                "llm_output": content
+            }).execute()
+            print("[DEBUG] Successfully saved to Supabase")
+        except Exception as db_error:
+            print(f"[DEBUG] Supabase error: {db_error}")
+            # Continue even if database save fails
 
         # Cria ZIP
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
@@ -172,7 +195,13 @@ def generate_project(req: GenRequest):
             for fname, fcontent in files.items():
                 zipf.writestr(fname, fcontent)
 
+        print(f"[DEBUG] Successfully generated project with {len(files)} files")  # Added debug logging
         return JSONResponse({"user_id": req.user_id, "llm_output": content, "project_zip_url": tmp.name, "files": files})
 
     except Exception as e:
+        print(f"[ERROR] generate_project failed: {str(e)}")  # Added error logging
         raise HTTPException(status_code=500, detail=f"Erro no backend: {str(e)}")
+
+@app.post("/generate")
+def generate(req: GenRequest):
+    return generate_project(req)

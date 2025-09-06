@@ -28,7 +28,7 @@ export default function HomeScreen({ user, onLogout, onStartProject }: HomeScree
 
   const fetchRecentProjects = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/projects/${user.id}`)
+      const res = await fetch(`https://genesis-backend-production.up.railway.app/projects/${user.id}`)
       if (res.ok) {
         const data = await res.json()
         setRecentProjects(data.projects.slice(0, 5))

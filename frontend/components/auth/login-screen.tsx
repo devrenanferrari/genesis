@@ -29,7 +29,9 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
     setLoading(true)
     try {
-      const endpoint = isLogin ? "/api/auth/login" : "/api/auth/signup"
+      const endpoint = isLogin
+        ? "https://genesis-backend-production.up.railway.app/auth/login"
+        : "https://genesis-backend-production.up.railway.app/auth/signup"
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

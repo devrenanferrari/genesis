@@ -23,7 +23,7 @@ export default function ProjectScreen({ user, prompt, onBack, onLogout }: Projec
 
   const generateProject = async () => {
     try {
-      const res = await fetch("/api/generate", {
+      const res = await fetch("https://genesis-backend-production.up.railway.app/generate_project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

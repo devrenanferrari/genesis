@@ -34,7 +34,7 @@ app = FastAPI()
 # =========================
 origins = [
     "http://localhost:3000",
-    "https://genesis-swart-nu.vercel.app/"
+    "https://genesis-k2ykslrzq-devrenanferraris-projects.vercel.app"
 ]
 
 app.add_middleware(
@@ -61,15 +61,13 @@ def generate(req: GenRequest):
         # =====================
         # Gera UUID se não houver user_id
         # =====================
-        user_id = req.user_id or str(uuid.uuid4())
+        if not req.user_id:
+            req.user_id = str(uuid.uuid4())
 
-        # Verifica se o usuário existe
-        user_check = supabase.table("users").select("*").eq("id", user_id).execute()
-        if not user_check.data:
-            # Cria usuário demo
+            # Cria usuário no Supabase
             supabase.table("users").insert({
-                "id": user_id,
-                "email": f"user_{user_id}@demo.com",
+                "id": req.user_id,
+                "email": f"demo-{req.user_id}@example.com",  # email único
                 "plan": "demo"
             }).execute()
 
@@ -92,12 +90,13 @@ def generate(req: GenRequest):
         # Salva no Supabase
         # =====================
         supabase.table("projects").insert({
-            "user_id": user_id,
+            "user_id": req.user_id,
             "prompt": req.prompt,
             "llm_output": llm_output
         }).execute()
 
-        return {"user_id": user_id, "llm_output": llm_output}
+        return {"user_id": req.user_id, "llm_output": llm_output}
 
     except Exception as e:
+        # Retorna erro compreensível para frontend
         raise HTTPException(status_code=500, detail=f"Erro no backend: {str(e)}")

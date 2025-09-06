@@ -50,10 +50,10 @@ class GenRequest(BaseModel):
 @app.post("/auth/login")
 def login(req: LoginRequest):
     try:
-        response = supabase.auth.sign_in_with_password({
-            "email": req.email,
-            "password": req.password
-        })
+        response = supabase.auth.sign_in_with_password(
+            email=req.email,
+            password=req.password
+        )
         
         if response.user:
             return JSONResponse({
@@ -68,23 +68,27 @@ def login(req: LoginRequest):
             raise HTTPException(status_code=401, detail="Invalid credentials")
             
     except Exception as e:
+        print(f"Login error: {str(e)}")  # Added debug logging
         raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
 
 @app.post("/auth/signup")
 def signup(req: SignupRequest):
     try:
-        response = supabase.auth.sign_up({
-            "email": req.email,
-            "password": req.password
-        })
+        response = supabase.auth.sign_up(
+            email=req.email,
+            password=req.password
+        )
         
         if response.user:
-            # Insert user into our users table
-            supabase.table("users").insert({
-                "id": response.user.id,
-                "email": req.email,
-                "plan": "free"
-            }).execute()
+            try:
+                supabase.table("users").insert({
+                    "id": response.user.id,
+                    "email": req.email,
+                    "plan": "free"
+                }).execute()
+            except Exception as db_error:
+                print(f"Database insert error: {str(db_error)}")
+                # Continue even if user table insert fails
             
             return JSONResponse({
                 "success": True,
@@ -97,6 +101,7 @@ def signup(req: SignupRequest):
             raise HTTPException(status_code=400, detail="Signup failed")
             
     except Exception as e:
+        print(f"Signup error: {str(e)}")  # Added debug logging
         raise HTTPException(status_code=400, detail=f"Signup failed: {str(e)}")
 
 @app.get("/auth/user/{user_id}")

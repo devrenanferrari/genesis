@@ -112,7 +112,7 @@ app.post("/auth/signup", async (req, res) => {
 
     if (response.data.user) {
       try {
-        await supabase.table("users").insert({
+        await supabase.from("users").insert({
           id: response.data.user.id,
           email,
           plan: "free",
@@ -141,7 +141,7 @@ app.post("/auth/signup", async (req, res) => {
 app.get("/auth/user/:user_id", async (req, res) => {
   try {
     const { user_id } = req.params
-    const response = await supabase.table("users").select("*").eq("id", user_id).single()
+    const response = await supabase.from("users").select("*").eq("id", user_id).single()
 
     if (response.data) {
       res.json({ user: response.data })
@@ -157,7 +157,7 @@ app.get("/projects/:user_id", async (req, res) => {
   try {
     const { user_id } = req.params
     const response = await supabase
-      .table("projects")
+      .from("projects")
       .select("*")
       .eq("user_id", user_id)
       .order("created_at", { ascending: false })
@@ -216,7 +216,7 @@ app.post("/generate_project", async (req, res) => {
 
     try {
       console.log("[DEBUG] Saving to Supabase...")
-      await supabase.table("projects").insert({
+      await supabase.from("projects").insert({
         user_id,
         prompt,
         llm_output: content,
@@ -254,7 +254,9 @@ app.post("/generate_project", async (req, res) => {
 })
 
 app.post("/generate", async (req, res) => {
-  return app.handle(req, res)
+  // Redirect to the main generate_project endpoint
+  req.url = "/generate_project"
+  return app._router.handle(req, res, () => {})
 })
 
 app.listen(PORT, () => {

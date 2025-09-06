@@ -13,7 +13,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Validação
 if not openai.api_key:
     raise Exception("OPENAI_API_KEY não está definida!")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -61,9 +60,9 @@ def generate(req: GenRequest):
     try:
         user_id = str(uuid.UUID(req.user_id))
     except ValueError:
-        user_id = str(uuid.uuid4())  # gera um UUID novo se inválido
+        user_id = str(uuid.uuid4())
 
-    # Chamada OpenAI
+    # Chamada OpenAI usando API nova
     response = openai.chat.completions.create(
         model="gpt-4.1",
         messages=[
@@ -73,6 +72,7 @@ def generate(req: GenRequest):
         temperature=0.2,
         max_tokens=2000
     )
+
     llm_output = response.choices[0].message.content
 
     # Salva no Supabase

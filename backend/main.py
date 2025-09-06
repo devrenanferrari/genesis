@@ -1,28 +1,62 @@
 import os
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import openai
 from supabase import create_client
 
-# Variáveis de ambiente corretas
+# =========================
+# Variáveis de ambiente
+# =========================
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Checa se estão definidas
+# Validação
+if not openai.api_key:
+    raise Exception("OPENAI_API_KEY não está definida!")
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise Exception("Supabase URL ou KEY não estão definidas!")
+    raise Exception("SUPABASE_URL ou SUPABASE_KEY não estão definidas!")
 
+# =========================
+# Cliente Supabase
+# =========================
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# =========================
+# FastAPI app
+# =========================
 app = FastAPI()
 
+# =========================
+# CORS Middleware
+# =========================
+origins = [
+    "http://localhost:3000",            # para testes locais
+    "https://genesis-k2ykslrzq-devrenanferraris-projects.vercel.app/"   # substitua pelo domínio do seu frontend
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],   # permite GET, POST, OPTIONS, etc
+    allow_headers=["*"],
+)
+
+# =========================
+# Modelos Pydantic
+# =========================
 class GenRequest(BaseModel):
     user_id: str
     prompt: str
 
+# =========================
+# Endpoint /generate
+# =========================
 @app.post("/generate")
 def generate(req: GenRequest):
+    # Chamada OpenAI
     response = openai.ChatCompletion.create(
         model="gpt-4.1",
         messages=[
@@ -34,6 +68,7 @@ def generate(req: GenRequest):
     )
     llm_output = response.choices[0].message.content
 
+    # Salva no Supabase
     supabase.table("projects").insert({
         "user_id": req.user_id,
         "prompt": req.prompt,

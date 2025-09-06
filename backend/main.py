@@ -1,6 +1,6 @@
 import os
 import uuid
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import openai
@@ -57,40 +57,47 @@ class GenRequest(BaseModel):
 # =========================
 @app.post("/generate")
 def generate(req: GenRequest):
-    # =====================
-    # Gera UUID se não houver user_id
-    # =====================
-    if not req.user_id:
-        req.user_id = str(uuid.uuid4())
+    try:
+        # =====================
+        # Gera UUID se não houver user_id
+        # =====================
+        user_id = req.user_id or str(uuid.uuid4())
 
-        # Cria usuário no Supabase
-        supabase.table("users").insert({
-            "id": req.user_id,
-            "name": "Usuário Demo"
+        # Verifica se o usuário existe
+        user_check = supabase.table("users").select("*").eq("id", user_id).execute()
+        if not user_check.data:
+            # Cria usuário demo
+            supabase.table("users").insert({
+                "id": user_id,
+                "email": f"user_{user_id}@demo.com",
+                "plan": "demo"
+            }).execute()
+
+        # =====================
+        # Chamada OpenAI (nova API)
+        # =====================
+        response = openai.chat.completions.create(
+            model="gpt-4.1",
+            messages=[
+                {"role": "system", "content": "Você é um gerador de código confiável."},
+                {"role": "user", "content": req.prompt}
+            ],
+            temperature=0.2,
+            max_tokens=2000
+        )
+
+        llm_output = response.choices[0].message.content
+
+        # =====================
+        # Salva no Supabase
+        # =====================
+        supabase.table("projects").insert({
+            "user_id": user_id,
+            "prompt": req.prompt,
+            "llm_output": llm_output
         }).execute()
 
-    # =====================
-    # Chamada OpenAI (nova API)
-    # =====================
-    response = openai.chat.completions.create(
-        model="gpt-4.1",
-        messages=[
-            {"role": "system", "content": "Você é um gerador de código confiável."},
-            {"role": "user", "content": req.prompt}
-        ],
-        temperature=0.2,
-        max_tokens=2000
-    )
+        return {"user_id": user_id, "llm_output": llm_output}
 
-    llm_output = response.choices[0].message.content
-
-    # =====================
-    # Salva no Supabase
-    # =====================
-    supabase.table("projects").insert({
-        "user_id": req.user_id,
-        "prompt": req.prompt,
-        "llm_output": llm_output
-    }).execute()
-
-    return {"user_id": req.user_id, "llm_output": llm_output}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro no backend: {str(e)}")

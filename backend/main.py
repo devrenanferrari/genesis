@@ -5,18 +5,21 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import openai
+from supabase import create_client
 from github import Github, InputGitTreeElement
 
 # =========================
 # Variáveis de ambiente
 # =========================
+openai.api_key = os.getenv("OPENAI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: "username/genesis-projects"
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: username/genesis-projects
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 
-if not GITHUB_TOKEN or not GITHUB_REPO:
-    raise Exception("GITHUB_TOKEN e GITHUB_REPO precisam estar definidos como variáveis de ambiente")
-
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gh = Github(GITHUB_TOKEN)
 repo = gh.get_repo(GITHUB_REPO)
 
@@ -24,10 +27,9 @@ repo = gh.get_repo(GITHUB_REPO)
 # FastAPI setup
 # =========================
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # permite qualquer IP
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,46 +38,117 @@ app.add_middleware(
 # =========================
 # Models
 # =========================
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+class GenRequest(BaseModel):
+    user_id: str
+    prompt: str
+
 class FileInput(BaseModel):
     user_id: str
     project: str
     files: dict  # {"App.ts": "codigo", "pastatal/arquivo.ts": "codigo"}
 
 # =========================
-# Endpoint principal
+# Endpoints Supabase
+# =========================
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    try:
+        response = supabase.auth.sign_in_with_password({
+            "email": req.email,
+            "password": req.password
+        })
+        if response.user:
+            return {"success": True, "user": {"id": response.user.id, "email": response.user.email}}
+        else:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+@app.post("/auth/signup")
+def signup(req: SignupRequest):
+    try:
+        response = supabase.auth.sign_up({"email": req.email, "password": req.password})
+        if response.user:
+            supabase.table("users").insert({
+                "id": response.user.id,
+                "email": req.email,
+                "plan": "free"
+            }).execute()
+            return {"success": True, "user": {"id": response.user.id, "email": response.user.email}}
+        else:
+            raise HTTPException(status_code=400, detail="Signup failed")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# =========================
+# Endpoint gerar projeto via OpenAI
+# =========================
+@app.post("/generate_project")
+def generate_project(req: GenRequest):
+    try:
+        system_msg = (
+            "Você é um gerador de projetos completos. "
+            "Crie arquivos separados, em JSON, incluindo README.md."
+        )
+        response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role":"system","content":system_msg},{"role":"user","content":req.prompt}],
+            temperature=0.2,
+            max_tokens=4000
+        )
+        content = response.choices[0].message.content
+        try:
+            files = json.loads(content)
+        except:
+            files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
+
+        # Cria localmente
+        base_path = Path("containers") / req.user_id / str(uuid.uuid4()) / "root"
+        base_path.mkdir(parents=True, exist_ok=True)
+        for fname, fcontent in files.items():
+            fpath = base_path / fname
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(fcontent)
+
+        return {"success": True, "files": list(files.keys()), "path": str(base_path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# =========================
+# Endpoint criar arquivos e subir GitHub
 # =========================
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
-        user_uuid = data.user_id
-        project_name = data.project
-
-        # Caminho local temporário
-        base_path = Path("containers") / user_uuid / project_name / "root"
+        base_path = Path("containers") / data.user_id / data.project / "root"
         base_path.mkdir(parents=True, exist_ok=True)
 
-        # Cria arquivos localmente
         for file_path, content in data.files.items():
             full_path = base_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # =========================
-        # Subindo para GitHub
-        # =========================
+        # GitHub
         tree_elements = []
         for file_path, content in data.files.items():
-            git_path = f"{user_uuid}/{project_name}/root/{file_path}"
+            git_path = f"{data.user_id}/{data.project}/root/{file_path}"
             tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
 
-        # Pega último commit
         master_ref = repo.get_branch(GITHUB_BRANCH)
         base_tree = repo.get_git_tree(master_ref.commit.sha)
         tree = repo.create_git_tree(tree_elements, base_tree)
         parent = repo.get_git_commit(master_ref.commit.sha)
-        commit_message = f"Add project {project_name} for user {user_uuid}"
-        commit = repo.create_git_commit(commit_message, tree, [parent])
+        commit = repo.create_git_commit(f"Add project {data.project} for user {data.user_id}", tree, [parent])
         master_ref.edit(commit.sha)
 
         return {
@@ -84,6 +157,5 @@ def create_project_files(data: FileInput):
             "files_created": list(data.files.keys()),
             "github_commit_url": f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")

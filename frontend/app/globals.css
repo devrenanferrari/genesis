@@ -1,0 +1,158 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Genesis design tokens - Professional dark theme for developers */
+  --background: #0f172a; /* Dark slate for main background */
+  --foreground: #f8fafc; /* Light slate for primary text */
+  --card: #1e293b; /* Slate-800 for cards */
+  --card-foreground: #f8fafc; /* Light text on cards */
+  --popover: #1e293b; /* Same as card for consistency */
+  --popover-foreground: #f8fafc; /* Light text on popovers */
+  --primary: #0891b2; /* Cyan-600 for primary actions */
+  --primary-foreground: #ffffff; /* White text on primary buttons */
+  --secondary: #475569; /* Slate-600 for secondary actions */
+  --secondary-foreground: #f8fafc; /* Light text on secondary elements */
+  --muted: #64748b; /* Slate-500 for muted text */
+  --muted-foreground: #cbd5e1; /* Slate-300 for muted text */
+  --accent: #0ea5e9; /* Cyan-500 for accents */
+  --accent-foreground: #ffffff; /* White text on accent elements */
+  --destructive: #dc2626; /* Red-600 for destructive actions */
+  --destructive-foreground: #ffffff; /* White text on destructive buttons */
+  --border: #334155; /* Slate-700 for borders */
+  --input: #1e293b; /* Dark slate for input fields */
+  --ring: #0891b2; /* Cyan for focus rings */
+  --chart-1: #3b82f6; /* Blue for charts */
+  --chart-2: #8b5cf6; /* Purple for charts */
+  --chart-3: #f59e0b; /* Amber for charts */
+  --chart-4: #10b981; /* Emerald for charts */
+  --chart-5: #ef4444; /* Red for charts */
+  --radius: 0.5rem; /* Rounded corners */
+  --sidebar: #1e293b; /* Dark slate for sidebar */
+  --sidebar-foreground: #f8fafc; /* Light text in sidebar */
+  --sidebar-primary: #0891b2; /* Cyan for primary sidebar elements */
+  --sidebar-primary-foreground: #ffffff; /* White text on primary sidebar elements */
+  --sidebar-accent: #0ea5e9; /* Cyan accent for sidebar */
+  --sidebar-accent-foreground: #ffffff; /* White text on sidebar accents */
+  --sidebar-border: #334155; /* Slate border for sidebar */
+  --sidebar-ring: #0891b2; /* Cyan for sidebar focus rings */
+  --font-work-sans: "Work Sans", sans-serif;
+  --font-open-sans: "Open Sans", sans-serif;
+}
+
+.light {
+  /* Light theme fallback */
+  --background: #ffffff;
+  --foreground: #0f172a;
+  --card: #f8fafc;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #0891b2;
+  --primary-foreground: #ffffff;
+  --secondary: #e2e8f0;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #0ea5e9;
+  --accent-foreground: #ffffff;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e2e8f0;
+  --input: #f8fafc;
+  --ring: #0891b2;
+}
+
+@theme inline {
+  /* Font variables */
+  --font-sans: var(--font-open-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-work-sans);
+
+  /* Color tokens */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-work-sans);
+  }
+}
+
+/* Custom animations for Genesis */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(8, 145, 178, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(8, 145, 178, 0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s ease-out;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}

@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pathlib import Path
 import openai
 from supabase import create_client
 import tempfile
@@ -21,20 +22,20 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
-origins = [
-    "http://localhost:3000",
-    "https://genesis-k2ykslrzq-devrenanferraris-projects.vercel.app",
-    "https://genesis-swart-nu.vercel.app"
-]
-
+# =========================
+# CORS liberado para qualquer IP
+# =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# =========================
+# Models
+# =========================
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -47,14 +48,17 @@ class GenRequest(BaseModel):
     user_id: str | None = None
     prompt: str
 
-
-# =========================
-# Models
-# =========================
 class FileInput(BaseModel):
     user_id: str
     project: str
     files: dict  # {"App.ts": "codigo", "pastatal/arquivo.ts": "codigo"}
+
+# =========================
+# Endpoints simples de teste
+# =========================
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
 
 # =========================
 # Endpoint para criar arquivos
@@ -62,25 +66,22 @@ class FileInput(BaseModel):
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
-        user_uuid = data.user_id
-        project_name = data.project
+        container_path = Path("containers") / data.user_id / data.project / "root"
+        container_path.mkdir(parents=True, exist_ok=True)
 
-        # Caminho base
-        base_path = Path("containers") / user_uuid / project_name / "root"
-        base_path.mkdir(parents=True, exist_ok=True)
+        for filepath, content in data.files.items():
+            full_path = container_path / filepath
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
 
-        # Cria arquivos
-        for file_path, content in data.files.items():
-            full_path = base_path / file_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)  # cria pastas necessárias
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(content)
-
-        return {"success": True, "path": str(base_path), "files_created": list(data.files.keys())}
+        return {"success": True, "path": str(container_path), "files_created": list(data.files.keys())}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
 
+# =========================
+# Autenticação
+# =========================
 @app.post("/auth/login")
 def login(req: LoginRequest):
     try:
@@ -92,28 +93,20 @@ def login(req: LoginRequest):
         if response.user:
             return JSONResponse({
                 "success": True,
-                "user": {
-                    "id": response.user.id,
-                    "email": response.user.email
-                },
+                "user": {"id": response.user.id, "email": response.user.email},
                 "session": response.session.access_token if response.session else None
             })
         else:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-            
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
 
 @app.post("/auth/signup")
 def signup(req: SignupRequest):
     try:
-        response = supabase.auth.sign_up({
-            "email": req.email,
-            "password": req.password
-        })
+        response = supabase.auth.sign_up({"email": req.email, "password": req.password})
         
         if response.user:
-            # Insert user into our users table
             supabase.table("users").insert({
                 "id": response.user.id,
                 "email": req.email,
@@ -122,14 +115,10 @@ def signup(req: SignupRequest):
             
             return JSONResponse({
                 "success": True,
-                "user": {
-                    "id": response.user.id,
-                    "email": response.user.email
-                }
+                "user": {"id": response.user.id, "email": response.user.email}
             })
         else:
             raise HTTPException(status_code=400, detail="Signup failed")
-            
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Signup failed: {str(e)}")
 
@@ -153,7 +142,7 @@ def get_user_projects(user_id: str):
         raise HTTPException(status_code=500, detail=f"Error fetching projects: {str(e)}")
 
 # =========================
-# Endpoint principal
+# Endpoint principal de geração de projeto
 # =========================
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
@@ -161,47 +150,44 @@ def generate_project(req: GenRequest):
         if not req.user_id:
             raise HTTPException(status_code=401, detail="User ID required")
 
-        # Solicita ao LLM os arquivos separados do projeto
         system_msg = (
             "Você é um gerador de projetos completos. "
-            "Crie os arquivos do projeto separados, indicando o nome de cada arquivo e seu conteúdo em JSON. "
-            "Exemplo de resposta JSON: {\"App.js\": \"conteúdo do App.js\", \"index.html\": \"conteúdo do index.html\"} "
+            "Crie os arquivos do projeto separados em JSON. "
+            "Exemplo: {\"App.js\": \"conteúdo\", \"index.html\": \"conteúdo\"}. "
             "Inclua também um README.md explicando o projeto."
         )
+
         response = openai.chat.completions.create(
             model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": req.prompt}
-            ],
+            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": req.prompt}],
             temperature=0.2,
             max_tokens=4000
         )
 
-        # Extrai resposta do LLM
         content = response.choices[0].message.content
 
-        # Tenta converter em JSON
         try:
             files = json.loads(content)
         except Exception:
-            # Se falhar, coloca tudo em App.js
             files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
 
-        # Salva no Supabase
         supabase.table("projects").insert({
             "user_id": req.user_id,
             "prompt": req.prompt,
             "llm_output": content
         }).execute()
 
-        # Cria ZIP
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
         with zipfile.ZipFile(tmp.name, "w") as zipf:
             for fname, fcontent in files.items():
                 zipf.writestr(fname, fcontent)
 
-        return JSONResponse({"user_id": req.user_id, "llm_output": content, "project_zip_url": tmp.name, "files": files})
+        return JSONResponse({
+            "user_id": req.user_id,
+            "llm_output": content,
+            "project_zip_url": tmp.name,
+            "files": files
+        })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro no backend: {str(e)}")

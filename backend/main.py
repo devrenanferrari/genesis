@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -129,27 +130,29 @@ def generate_project(req: GenRequest):
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
+        # Cria arquivos localmente
         base_path = Path("containers") / data.user_id / data.project / "root"
         base_path.mkdir(parents=True, exist_ok=True)
-
         for file_path, content in data.files.items():
             full_path = base_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # GitHub
+        # GitHub commit correto
         tree_elements = []
         for file_path, content in data.files.items():
             git_path = f"{data.user_id}/{data.project}/root/{file_path}"
             tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
 
-        master_ref = repo.get_branch(GITHUB_BRANCH)
-        base_tree = repo.get_git_tree(master_ref.commit.sha)
+        ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")  # referência do branch
+        base_tree = repo.get_git_tree(ref.object.sha)
         tree = repo.create_git_tree(tree_elements, base_tree)
-        parent = repo.get_git_commit(master_ref.commit.sha)
-        commit = repo.create_git_commit(f"Add project {data.project} for user {data.user_id}", tree, [parent])
-        master_ref.edit(commit.sha)
+        parent = repo.get_git_commit(ref.object.sha)
+        commit = repo.create_git_commit(
+            f"Add project {data.project} for user {data.user_id}", tree, [parent]
+        )
+        ref.edit(commit.sha)  # atualiza o branch
 
         return {
             "success": True,

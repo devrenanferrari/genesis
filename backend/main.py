@@ -1,33 +1,33 @@
 import os
 import uuid
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from pathlib import Path
-import openai
-from supabase import create_client
-import tempfile
-import zipfile
-import json
+from github import Github, InputGitTreeElement
 
 # =========================
 # Variáveis de ambiente
 # =========================
-openai.api_key = os.getenv("OPENAI_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: "username/genesis-projects"
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+if not GITHUB_TOKEN or not GITHUB_REPO:
+    raise Exception("GITHUB_TOKEN e GITHUB_REPO precisam estar definidos como variáveis de ambiente")
 
+gh = Github(GITHUB_TOKEN)
+repo = gh.get_repo(GITHUB_REPO)
+
+# =========================
+# FastAPI setup
+# =========================
 app = FastAPI()
 
-# =========================
-# CORS liberado para qualquer IP
-# =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # permite qualquer IP
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,158 +36,54 @@ app.add_middleware(
 # =========================
 # Models
 # =========================
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-class SignupRequest(BaseModel):
-    email: str
-    password: str
-
-class GenRequest(BaseModel):
-    user_id: str | None = None
-    prompt: str
-
 class FileInput(BaseModel):
     user_id: str
     project: str
     files: dict  # {"App.ts": "codigo", "pastatal/arquivo.ts": "codigo"}
 
 # =========================
-# Endpoints simples de teste
-# =========================
-@app.get("/ping")
-def ping():
-    return {"status": "ok"}
-
-# =========================
-# Endpoint para criar arquivos
+# Endpoint principal
 # =========================
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
-        container_path = Path("containers") / data.user_id / data.project / "root"
-        container_path.mkdir(parents=True, exist_ok=True)
+        user_uuid = data.user_id
+        project_name = data.project
 
-        for filepath, content in data.files.items():
-            full_path = container_path / filepath
+        # Caminho local temporário
+        base_path = Path("containers") / user_uuid / project_name / "root"
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        # Cria arquivos localmente
+        for file_path, content in data.files.items():
+            full_path = base_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(content)
 
-        return {"success": True, "path": str(container_path), "files_created": list(data.files.keys())}
+        # =========================
+        # Subindo para GitHub
+        # =========================
+        tree_elements = []
+        for file_path, content in data.files.items():
+            git_path = f"{user_uuid}/{project_name}/root/{file_path}"
+            tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
+
+        # Pega último commit
+        master_ref = repo.get_branch(GITHUB_BRANCH)
+        base_tree = repo.get_git_tree(master_ref.commit.sha)
+        tree = repo.create_git_tree(tree_elements, base_tree)
+        parent = repo.get_git_commit(master_ref.commit.sha)
+        commit_message = f"Add project {project_name} for user {user_uuid}"
+        commit = repo.create_git_commit(commit_message, tree, [parent])
+        master_ref.edit(commit.sha)
+
+        return {
+            "success": True,
+            "path": str(base_path),
+            "files_created": list(data.files.keys()),
+            "github_commit_url": f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
-
-# =========================
-# Autenticação
-# =========================
-@app.post("/auth/login")
-def login(req: LoginRequest):
-    try:
-        response = supabase.auth.sign_in_with_password({
-            "email": req.email,
-            "password": req.password
-        })
-        
-        if response.user:
-            return JSONResponse({
-                "success": True,
-                "user": {"id": response.user.id, "email": response.user.email},
-                "session": response.session.access_token if response.session else None
-            })
-        else:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
-
-@app.post("/auth/signup")
-def signup(req: SignupRequest):
-    try:
-        response = supabase.auth.sign_up({"email": req.email, "password": req.password})
-        
-        if response.user:
-            supabase.table("users").insert({
-                "id": response.user.id,
-                "email": req.email,
-                "plan": "free"
-            }).execute()
-            
-            return JSONResponse({
-                "success": True,
-                "user": {"id": response.user.id, "email": response.user.email}
-            })
-        else:
-            raise HTTPException(status_code=400, detail="Signup failed")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Signup failed: {str(e)}")
-
-@app.get("/auth/user/{user_id}")
-def get_user(user_id: str):
-    try:
-        response = supabase.table("users").select("*").eq("id", user_id).execute()
-        if response.data:
-            return JSONResponse({"user": response.data[0]})
-        else:
-            raise HTTPException(status_code=404, detail="User not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching user: {str(e)}")
-
-@app.get("/projects/{user_id}")
-def get_user_projects(user_id: str):
-    try:
-        response = supabase.table("projects").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-        return JSONResponse({"projects": response.data})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching projects: {str(e)}")
-
-# =========================
-# Endpoint principal de geração de projeto
-# =========================
-@app.post("/generate_project")
-def generate_project(req: GenRequest):
-    try:
-        if not req.user_id:
-            raise HTTPException(status_code=401, detail="User ID required")
-
-        system_msg = (
-            "Você é um gerador de projetos completos. "
-            "Crie os arquivos do projeto separados em JSON. "
-            "Exemplo: {\"App.js\": \"conteúdo\", \"index.html\": \"conteúdo\"}. "
-            "Inclua também um README.md explicando o projeto."
-        )
-
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": req.prompt}],
-            temperature=0.2,
-            max_tokens=4000
-        )
-
-        content = response.choices[0].message.content
-
-        try:
-            files = json.loads(content)
-        except Exception:
-            files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
-
-        supabase.table("projects").insert({
-            "user_id": req.user_id,
-            "prompt": req.prompt,
-            "llm_output": content
-        }).execute()
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-        with zipfile.ZipFile(tmp.name, "w") as zipf:
-            for fname, fcontent in files.items():
-                zipf.writestr(fname, fcontent)
-
-        return JSONResponse({
-            "user_id": req.user_id,
-            "llm_output": content,
-            "project_zip_url": tmp.name,
-            "files": files
-        })
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro no backend: {str(e)}")

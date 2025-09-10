@@ -54,7 +54,7 @@ class GenRequest(BaseModel):
 class FileInput(BaseModel):
     user_id: str
     project: str
-    files: dict  # {"App.ts": "codigo", "pastatal/arquivo.ts": "codigo"}
+    files: dict  # {"App.ts": "codigo", "pasta/arquivo.ts": "codigo"}
 
 # =========================
 # Endpoints Supabase
@@ -112,8 +112,10 @@ def generate_project(req: GenRequest):
             files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
 
         # Cria localmente
-        base_path = Path("containers") / req.user_id / str(uuid.uuid4()) / "root"
+        project_uuid = str(uuid.uuid4())
+        base_path = Path("containers") / project_uuid / req.user_id / req.prompt
         base_path.mkdir(parents=True, exist_ok=True)
+
         for fname, fcontent in files.items():
             fpath = base_path / fname
             fpath.parent.mkdir(parents=True, exist_ok=True)
@@ -130,32 +132,37 @@ def generate_project(req: GenRequest):
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
+        # Gera UUID para o projeto
+        project_uuid = str(uuid.uuid4())
+
         # Cria arquivos localmente
-        base_path = Path("containers") / data.user_id / data.project / "root"
+        base_path = Path("containers") / project_uuid / data.project
         base_path.mkdir(parents=True, exist_ok=True)
+
         for file_path, content in data.files.items():
             full_path = base_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # GitHub commit correto
+        # Prepara commit no GitHub
         tree_elements = []
         for file_path, content in data.files.items():
-            git_path = f"{data.user_id}/{data.project}/root/{file_path}"
+            git_path = f"containers/{project_uuid}/{data.project}/{file_path}"
             tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
 
-        ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")  # referência do branch
+        ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")  # branch
         base_tree = repo.get_git_tree(ref.object.sha)
         tree = repo.create_git_tree(tree_elements, base_tree)
         parent = repo.get_git_commit(ref.object.sha)
         commit = repo.create_git_commit(
             f"Add project {data.project} for user {data.user_id}", tree, [parent]
         )
-        ref.edit(commit.sha)  # atualiza o branch
+        ref.edit(commit.sha)  # atualiza branch
 
         return {
             "success": True,
+            "uuid": project_uuid,
             "path": str(base_path),
             "files_created": list(data.files.keys()),
             "github_commit_url": f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"

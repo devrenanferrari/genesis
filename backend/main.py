@@ -17,10 +17,10 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: username/genesis-projects
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: devrenanferrari/genesis
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 VERCEL_TOKEN = os.getenv("VERCEL_TOKEN")
-VERCEL_TEAM_ID = os.getenv("VERCEL_TEAM_ID")  # opcional, se tiver time
+VERCEL_TEAM_ID = os.getenv("VERCEL_TEAM_ID")  # ex: team_xxxxxxxx
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gh = Github(GITHUB_TOKEN)
@@ -61,7 +61,7 @@ class FileInput(BaseModel):
 class DeployRequest(BaseModel):
     user_id: str
     project: str
-    repo: str  # ex: "username/genesis-projects"
+    repo: str  # ex: "devrenanferrari/genesis"
 
 # =========================
 # Endpoints Supabase
@@ -150,7 +150,7 @@ def create_project_files(data: FileInput):
 
         tree_elements = []
         for file_path, content in data.files.items():
-            git_path = f"containers/{project_uuid}/{data.project}/{file_path}"
+            git_path = f"{data.project}/{file_path}"
             tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
 
         ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")
@@ -179,22 +179,23 @@ def create_project_files(data: FileInput):
 def deploy_project(data: DeployRequest):
     try:
         url = "https://api.vercel.com/v13/deployments"
+        if VERCEL_TEAM_ID:
+            url += f"?teamId={VERCEL_TEAM_ID}"
+
         headers = {"Authorization": f"Bearer {VERCEL_TOKEN}", "Content-Type": "application/json"}
         
         payload = {
             "name": data.project,
             "gitSource": {
                 "type": "github",
-                "repoId": data.repo,
+                "org": data.repo.split("/")[0],
+                "repo": data.repo.split("/")[1],
                 "ref": GITHUB_BRANCH
             }
         }
 
-        if VERCEL_TEAM_ID:
-            url += f"?teamId={VERCEL_TEAM_ID}"
-
         r = requests.post(url, headers=headers, data=json.dumps(payload))
-        if r.status_code != 200:
+        if r.status_code not in (200, 201):
             raise HTTPException(status_code=r.status_code, detail=r.text)
 
         return {"success": True, "vercel_response": r.json()}

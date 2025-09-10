@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import openai
 from supabase import create_client
 from github import Github, InputGitTreeElement
+import requests
 
 # =========================
 # Variáveis de ambiente
@@ -19,6 +19,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: username/genesis-projects
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
+VERCEL_TOKEN = os.getenv("VERCEL_TOKEN")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gh = Github(GITHUB_TOKEN)
@@ -39,92 +40,14 @@ app.add_middleware(
 # =========================
 # Models
 # =========================
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-class SignupRequest(BaseModel):
-    email: str
-    password: str
-
-class GenRequest(BaseModel):
-    user_id: str
-    prompt: str
-
 class FileInput(BaseModel):
     user_id: str
     project: str
-    files: dict  # {"App.ts": "codigo", "pasta/arquivo.ts": "codigo"}
+    files: dict  # {"App.ts": "codigo", "pastatal/arquivo.ts": "codigo"}
 
-# =========================
-# Endpoints Supabase
-# =========================
-@app.post("/auth/login")
-def login(req: LoginRequest):
-    try:
-        response = supabase.auth.sign_in_with_password({
-            "email": req.email,
-            "password": req.password
-        })
-        if response.user:
-            return {"success": True, "user": {"id": response.user.id, "email": response.user.email}}
-        else:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-@app.post("/auth/signup")
-def signup(req: SignupRequest):
-    try:
-        response = supabase.auth.sign_up({"email": req.email, "password": req.password})
-        if response.user:
-            supabase.table("users").insert({
-                "id": response.user.id,
-                "email": req.email,
-                "plan": "free"
-            }).execute()
-            return {"success": True, "user": {"id": response.user.id, "email": response.user.email}}
-        else:
-            raise HTTPException(status_code=400, detail="Signup failed")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-# =========================
-# Endpoint gerar projeto via OpenAI
-# =========================
-@app.post("/generate_project")
-def generate_project(req: GenRequest):
-    try:
-        system_msg = (
-            "Você é um gerador de projetos completos. "
-            "Crie arquivos separados, em JSON, incluindo README.md."
-        )
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role":"system","content":system_msg},{"role":"user","content":req.prompt}],
-            temperature=0.2,
-            max_tokens=4000
-        )
-        content = response.choices[0].message.content
-        try:
-            files = json.loads(content)
-        except:
-            files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
-
-        # Cria localmente
-        project_uuid = str(uuid.uuid4())
-        base_path = Path("containers") / project_uuid / req.user_id / req.prompt
-        base_path.mkdir(parents=True, exist_ok=True)
-
-        for fname, fcontent in files.items():
-            fpath = base_path / fname
-            fpath.parent.mkdir(parents=True, exist_ok=True)
-            with open(fpath, "w", encoding="utf-8") as f:
-                f.write(fcontent)
-
-        return {"success": True, "files": list(files.keys()), "path": str(base_path)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+class DeployInput(BaseModel):
+    user_id: str
+    project: str
 
 # =========================
 # Endpoint criar arquivos e subir GitHub
@@ -132,40 +55,80 @@ def generate_project(req: GenRequest):
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
-        # Gera UUID para o projeto
-        project_uuid = str(uuid.uuid4())
-
         # Cria arquivos localmente
-        base_path = Path("containers") / project_uuid / data.project
+        base_path = Path("containers") / data.user_id / data.project / "root"
         base_path.mkdir(parents=True, exist_ok=True)
-
         for file_path, content in data.files.items():
             full_path = base_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # Prepara commit no GitHub
+        # GitHub commit
         tree_elements = []
         for file_path, content in data.files.items():
-            git_path = f"containers/{project_uuid}/{data.project}/{file_path}"
+            git_path = f"containers/{data.user_id}/{data.project}/{file_path}"
             tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
 
-        ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")  # branch
+        ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")
         base_tree = repo.get_git_tree(ref.object.sha)
         tree = repo.create_git_tree(tree_elements, base_tree)
         parent = repo.get_git_commit(ref.object.sha)
         commit = repo.create_git_commit(
             f"Add project {data.project} for user {data.user_id}", tree, [parent]
         )
-        ref.edit(commit.sha)  # atualiza branch
+        ref.edit(commit.sha)
 
         return {
             "success": True,
-            "uuid": project_uuid,
             "path": str(base_path),
             "files_created": list(data.files.keys()),
             "github_commit_url": f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
+
+# =========================
+# Endpoint para deploy na Vercel
+# =========================
+@app.post("/deploy_project")
+def deploy_project(data: DeployInput):
+    try:
+        deploy_url = "https://api.vercel.com/v13/deployments"
+        headers = {
+            "Authorization": f"Bearer {VERCEL_TOKEN}",
+            "Content-Type": "application/json"
+        }
+
+        body = {
+            "name": f"{data.project}-{data.user_id[:6]}",  # nome único
+            "gitSource": {
+                "type": "github",
+                "repo": GITHUB_REPO,
+                "ref": GITHUB_BRANCH,
+                "path": f"containers/{data.user_id}/{data.project}"
+            }
+        }
+
+        response = requests.post(deploy_url, headers=headers, json=body)
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Erro Vercel: {response.text}")
+
+        result = response.json()
+        preview_url = f"https://{result['url']}"
+
+        # Salva no Supabase (opcional)
+        supabase.table("projects").insert({
+            "user_id": data.user_id,
+            "project": data.project,
+            "vercel_url": preview_url
+        }).execute()
+
+        return {
+            "success": True,
+            "vercel_preview_url": preview_url,
+            "deployment_id": result["id"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro no deploy: {str(e)}")

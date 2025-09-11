@@ -144,35 +144,25 @@ def create_project_files(data: FileInput):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # Cria repositório no GitHub com commit inicial
+        # Cria repositório no GitHub
         user = gh.get_user()
         github_repo_name = f"{data.project}-{project_uuid[:8]}"
         github_repo = user.create_repo(
             name=github_repo_name,
             private=True,
-            auto_init=True  # garante branch main e commit inicial
+            auto_init=False  # não inicializa com README
         )
 
-        # Adiciona os arquivos do projeto ao repositório
+        # Prepara árvore de arquivos para commit
         tree_elements = []
         for file_path, content in data.files.items():
             tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
 
-        # Usa a árvore inicial do commit criado pelo auto_init
-        base_tree = github_repo.get_git_tree("main").sha
-        tree = github_repo.create_git_tree(tree_elements, base_tree)
-
-        # Commit final
-        parent_commit = github_repo.get_commits()[0]
-        commit = github_repo.create_git_commit(
-            f"Add project {data.project} for user {data.user_id}",
-            tree,
-            [parent_commit]
-        )
-
-        # Atualiza o branch main para o novo commit
-        ref = github_repo.get_git_ref("heads/main")
-        ref.edit(commit.sha)
+        # Cria commit inicial diretamente (sem base_tree ou parent)
+        tree = github_repo.create_git_tree(tree_elements)
+        commit = github_repo.create_git_commit(f"Initial commit for project {data.project}", tree, [])
+        # Cria branch main apontando para o commit inicial
+        ref = github_repo.create_git_ref("refs/heads/main", commit.sha)
 
         return {
             "success": True,
@@ -185,6 +175,7 @@ def create_project_files(data: FileInput):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
+
 
 # =========================
 # Endpoint deploy na Vercel apontando para raiz do repo

@@ -189,12 +189,16 @@ def create_project_files(data: FileInput):
 @app.post("/deploy_project")
 def deploy_project(data: DeployRequest):
     try:
-        project_name = normalize_project_name(data.project)
         url = "https://api.vercel.com/v13/deployments"
         if VERCEL_TEAM_ID:
             url += f"?teamId={VERCEL_TEAM_ID}"
 
         headers = {"Authorization": f"Bearer {VERCEL_TOKEN}", "Content-Type": "application/json"}
+        
+        # Normaliza nome do projeto
+        project_name = re.sub(r'[^a-z0-9._-]', '_', data.project.lower())
+        project_name = re.sub(r'_+', '_', project_name)[:100]
+
         payload = {
             "name": project_name,
             "gitSource": {
@@ -202,13 +206,21 @@ def deploy_project(data: DeployRequest):
                 "org": data.repo.split("/")[0],
                 "repo": data.repo.split("/")[1],
                 "ref": GITHUB_BRANCH
+            },
+            "projectSettings": {
+                "framework": "nextjs",
+                "installCommand": "npm install",
+                "buildCommand": "npm run build",
+                "devCommand": "npm run dev",
+                "outputDirectory": "."
             }
         }
 
-        r = requests.post(url, headers=headers, data=json.dumps(payload))
+        r = requests.post(url, headers=headers, json=payload)
         if r.status_code not in (200, 201):
             raise HTTPException(status_code=r.status_code, detail=r.text)
 
         return {"success": True, "vercel_response": r.json()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+

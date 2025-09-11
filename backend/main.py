@@ -1,6 +1,7 @@
 import os
 import uuid
 import json
+import re
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,11 +18,14 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # ex: devrenanferrari/genesis
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 VERCEL_TOKEN = os.getenv("VERCEL_TOKEN")
 VERCEL_TEAM_ID = os.getenv("VERCEL_TEAM_ID")  # opcional
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 gh = Github(GITHUB_TOKEN)
+repo = gh.get_repo(GITHUB_REPO)
 
 # =========================
 # FastAPI setup
@@ -58,7 +62,16 @@ class FileInput(BaseModel):
 class DeployRequest(BaseModel):
     user_id: str
     project: str
-    github_repo: str  # repo criado para esse projeto
+    repo: str  # ex: "devrenanferrari/genesis"
+
+# =========================
+# Função auxiliar para normalizar nome para Vercel
+# =========================
+def normalize_project_name(name: str) -> str:
+    name = name.lower()
+    name = re.sub(r"[^a-z0-9_.-]", "_", name)
+    name = re.sub(r"_{2,}", "_", name)  # evita múltiplos underscores
+    return name[:100]  # max 100 chars para Vercel
 
 # =========================
 # Endpoints Supabase
@@ -99,7 +112,10 @@ def signup(req: SignupRequest):
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
     try:
-        system_msg = "Você é um gerador de projetos completos. Crie arquivos separados, em JSON, incluindo README.md."
+        system_msg = (
+            "Você é um gerador de projetos completos. "
+            "Crie arquivos separados, em JSON, incluindo README.md."
+        )
         response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[{"role":"system","content":system_msg},{"role":"user","content":req.prompt}],
@@ -127,88 +143,69 @@ def generate_project(req: GenRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # =========================
-# Endpoint criar repo no GitHub e enviar arquivos
+# Endpoint criar arquivos e subir GitHub
 # =========================
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
         project_uuid = str(uuid.uuid4())
-        base_path = Path("containers") / project_uuid / data.project
+        normalized_project = normalize_project_name(data.project)
+        base_path = Path("containers") / project_uuid / normalized_project
         base_path.mkdir(parents=True, exist_ok=True)
 
-        # Cria arquivos localmente
         for file_path, content in data.files.items():
             full_path = base_path / file_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # Cria repositório no GitHub
-        user = gh.get_user()
-        github_repo_name = f"{data.project}-{project_uuid[:8]}"
-        github_repo = user.create_repo(
-            name=github_repo_name,
-            private=True,
-            auto_init=True  # ✅ Inicializa com README.md
-        )
-
-        # Pega o commit inicial do README.md
-        initial_commit = github_repo.get_commits()[0]
-
-        # Prepara novos arquivos
         tree_elements = []
         for file_path, content in data.files.items():
-            if file_path != "README.md":  # evita duplicar
-                tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
+            git_path = f"{normalized_project}/{file_path}"
+            tree_elements.append(InputGitTreeElement(git_path, "100644", "blob", content))
 
-        base_tree = github_repo.get_git_tree(initial_commit.sha)
-        tree = github_repo.create_git_tree(tree_elements, base_tree)
-
-        commit = github_repo.create_git_commit(
-            f"Add project files for {data.project}",
-            tree,
-            [initial_commit.commit]
+        ref = repo.get_git_ref(f"heads/{GITHUB_BRANCH}")
+        base_tree = repo.get_git_tree(ref.object.sha)
+        tree = repo.create_git_tree(tree_elements, base_tree)
+        parent = repo.get_git_commit(ref.object.sha)
+        commit = repo.create_git_commit(
+            f"Add project {normalized_project} for user {data.user_id}", tree, [parent]
         )
-        github_repo.get_git_ref("heads/main").edit(commit.sha)
+        ref.edit(commit.sha)
 
         return {
             "success": True,
             "uuid": project_uuid,
             "path": str(base_path),
-            "github_repo": github_repo.full_name,
             "files_created": list(data.files.keys()),
-            "github_commit_url": f"https://github.com/{github_repo.full_name}/commit/{commit.sha}"
+            "github_commit_url": f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
 
 # =========================
-# Endpoint deploy na Vercel apontando para raiz do repo
+# Endpoint deploy na Vercel
 # =========================
 @app.post("/deploy_project")
 def deploy_project(data: DeployRequest):
     try:
+        project_name = normalize_project_name(data.project)
         url = "https://api.vercel.com/v13/deployments"
         if VERCEL_TEAM_ID:
             url += f"?teamId={VERCEL_TEAM_ID}"
 
-        headers = {
-            "Authorization": f"Bearer {VERCEL_TOKEN}",
-            "Content-Type": "application/json"
-        }
-
+        headers = {"Authorization": f"Bearer {VERCEL_TOKEN}", "Content-Type": "application/json"}
         payload = {
-            "name": data.project,
+            "name": project_name,
             "gitSource": {
                 "type": "github",
-                "org": data.github_repo.split("/")[0],
-                "repo": data.github_repo.split("/")[1],
-                "ref": "main"
+                "org": data.repo.split("/")[0],
+                "repo": data.repo.split("/")[1],
+                "ref": GITHUB_BRANCH
             }
         }
 
-        r = requests.post(url, headers=headers, json=payload)
+        r = requests.post(url, headers=headers, data=json.dumps(payload))
         if r.status_code not in (200, 201):
             raise HTTPException(status_code=r.status_code, detail=r.text)
 

@@ -144,29 +144,35 @@ def create_project_files(data: FileInput):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # Cria repositório no GitHub
+        # Cria repositório no GitHub com commit inicial
         user = gh.get_user()
         github_repo_name = f"{data.project}-{project_uuid[:8]}"
         github_repo = user.create_repo(
             name=github_repo_name,
             private=True,
-            auto_init=False
+            auto_init=True  # garante branch main e commit inicial
         )
 
-        # Prepara commit
+        # Adiciona os arquivos do projeto ao repositório
         tree_elements = []
         for file_path, content in data.files.items():
             tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
 
-        base_tree = github_repo.get_git_tree("main").sha if github_repo.get_branches() else None
-        if base_tree:
-            tree = github_repo.create_git_tree(tree_elements, base_tree)
-        else:
-            tree = github_repo.create_git_tree(tree_elements)
+        # Usa a árvore inicial do commit criado pelo auto_init
+        base_tree = github_repo.get_git_tree("main").sha
+        tree = github_repo.create_git_tree(tree_elements, base_tree)
 
-        parent = github_repo.get_commits()[0] if github_repo.get_commits().totalCount else None
-        commit = github_repo.create_git_commit(f"Initial commit for project {data.project}", tree, [parent] if parent else [])
-        ref = github_repo.create_git_ref(f"refs/heads/main", commit.sha)
+        # Commit final
+        parent_commit = github_repo.get_commits()[0]
+        commit = github_repo.create_git_commit(
+            f"Add project {data.project} for user {data.user_id}",
+            tree,
+            [parent_commit]
+        )
+
+        # Atualiza o branch main para o novo commit
+        ref = github_repo.get_git_ref("heads/main")
+        ref.edit(commit.sha)
 
         return {
             "success": True,

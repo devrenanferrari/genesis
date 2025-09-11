@@ -132,7 +132,6 @@ def generate_project(req: GenRequest):
 @app.post("/create_project_files")
 def create_project_files(data: FileInput):
     try:
-        # Cria UUID do projeto
         project_uuid = str(uuid.uuid4())
         base_path = Path("containers") / project_uuid / data.project
         base_path.mkdir(parents=True, exist_ok=True)
@@ -144,37 +143,33 @@ def create_project_files(data: FileInput):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # Cria repositório no GitHub já com README.md
+        # Cria repositório no GitHub
         user = gh.get_user()
         github_repo_name = f"{data.project}-{project_uuid[:8]}"
         github_repo = user.create_repo(
             name=github_repo_name,
             private=True,
-            auto_init=True  # cria README.md automaticamente
+            auto_init=True  # ✅ Inicializa com README.md
         )
 
-        # Pega a branch main
-        branch = github_repo.get_branch("main")
+        # Pega o commit inicial do README.md
+        initial_commit = github_repo.get_commits()[0]
 
-        # Prepara commit com todos os arquivos do projeto
+        # Prepara novos arquivos
         tree_elements = []
         for file_path, content in data.files.items():
-            tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
+            if file_path != "README.md":  # evita duplicar
+                tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
 
-        # Cria árvore baseada no commit atual
-        base_tree = github_repo.get_git_tree(branch.commit.sha)
+        base_tree = github_repo.get_git_tree(initial_commit.sha)
         tree = github_repo.create_git_tree(tree_elements, base_tree)
 
-        parent = branch.commit
         commit = github_repo.create_git_commit(
-            f"Add project {data.project} files for user {data.user_id}",
+            f"Add project files for {data.project}",
             tree,
-            [parent]
+            [initial_commit.commit]
         )
-
-        # Atualiza a branch main
-        ref = github_repo.get_git_ref("heads/main")
-        ref.edit(commit.sha)
+        github_repo.get_git_ref("heads/main").edit(commit.sha)
 
         return {
             "success": True,
@@ -187,9 +182,6 @@ def create_project_files(data: FileInput):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
-
-
-
 
 # =========================
 # Endpoint deploy na Vercel apontando para raiz do repo

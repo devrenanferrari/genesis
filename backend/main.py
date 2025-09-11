@@ -153,16 +153,22 @@ def create_project_files(data: FileInput):
             auto_init=False  # não inicializa com README
         )
 
-        # Prepara árvore de arquivos para commit
-        tree_elements = []
-        for file_path, content in data.files.items():
-            tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
+        # Cria árvore de arquivos
+        tree_elements = [
+            InputGitTreeElement(file_path, "100644", "blob", content)
+            for file_path, content in data.files.items()
+        ]
 
-        # Cria commit inicial diretamente (sem base_tree ou parent)
+        # Cria commit inicial direto (sem parent)
         tree = github_repo.create_git_tree(tree_elements)
-        commit = github_repo.create_git_commit(f"Initial commit for project {data.project}", tree, [])
+        commit = github_repo.create_git_commit(
+            f"Initial commit for project {data.project}",
+            tree,
+            parents=[]
+        )
+
         # Cria branch main apontando para o commit inicial
-        ref = github_repo.create_git_ref("refs/heads/main", commit.sha)
+        github_repo.create_git_ref("refs/heads/main", commit.sha)
 
         return {
             "success": True,
@@ -175,6 +181,7 @@ def create_project_files(data: FileInput):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
+
 
 
 # =========================

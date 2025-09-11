@@ -144,31 +144,37 @@ def create_project_files(data: FileInput):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-        # Cria repositório no GitHub
+        # Cria repositório no GitHub já com README.md
         user = gh.get_user()
         github_repo_name = f"{data.project}-{project_uuid[:8]}"
         github_repo = user.create_repo(
             name=github_repo_name,
             private=True,
-            auto_init=False  # não inicializa com README
+            auto_init=True  # cria README.md automaticamente
         )
 
-        # Cria árvore de arquivos
-        tree_elements = [
-            InputGitTreeElement(file_path, "100644", "blob", content)
-            for file_path, content in data.files.items()
-        ]
+        # Pega a branch main
+        branch = github_repo.get_branch("main")
 
-        # Cria commit inicial direto (sem parent)
-        tree = github_repo.create_git_tree(tree_elements)
+        # Prepara commit com todos os arquivos do projeto
+        tree_elements = []
+        for file_path, content in data.files.items():
+            tree_elements.append(InputGitTreeElement(file_path, "100644", "blob", content))
+
+        # Cria árvore baseada no commit atual
+        base_tree = github_repo.get_git_tree(branch.commit.sha)
+        tree = github_repo.create_git_tree(tree_elements, base_tree)
+
+        parent = branch.commit
         commit = github_repo.create_git_commit(
-            f"Initial commit for project {data.project}",
+            f"Add project {data.project} files for user {data.user_id}",
             tree,
-            parents=[]
+            [parent]
         )
 
-        # Cria branch main apontando para o commit inicial
-        github_repo.create_git_ref("refs/heads/main", commit.sha)
+        # Atualiza a branch main
+        ref = github_repo.get_git_ref("heads/main")
+        ref.edit(commit.sha)
 
         return {
             "success": True,
@@ -181,6 +187,7 @@ def create_project_files(data: FileInput):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao criar arquivos: {str(e)}")
+
 
 
 

@@ -4,14 +4,16 @@ import json
 import re
 from pathlib import Path
 from typing import Optional, List
+from datetime import datetime
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 import openai
 from supabase import create_client
 from github import Github, InputGitTreeElement
 import requests
-from datetime import datetime
 
 # =========================
 # Constants / System Prompt
@@ -267,28 +269,18 @@ def supabase_delete(table: str, filters: List[tuple]):
     return getattr(res, "data", res)
 
 def call_openai_with_messages(messages: list, model: str = "gpt-4o", temperature: float = 0.7, max_tokens: int = 1500):
-    try:
-        resp = openai.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return resp.choices[0].message.content, resp
-    except Exception as e:
-        raise
+    resp = openai.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens
+    )
+    return resp.choices[0].message.content, resp
 
-# =========================
-# GitHub / Vercel Helpers
-# =========================
 def github_commit_files(project_id: str, files: dict, commit_message: str = "Deploy Genesis Project") -> str:
     if not repo:
         raise RuntimeError("GitHub repository not configured")
-    
-    elements = []
-    for path, content in files.items():
-        elements.append(InputGitTreeElement(path, "100644", "blob", content))
-    
+    elements = [InputGitTreeElement(path, "100644", "blob", content) for path, content in files.items()]
     source = repo.get_branch(GITHUB_BRANCH)
     base_tree = repo.get_git_tree(source.commit.sha)
     tree = repo.create_git_tree(elements, base_tree)
@@ -341,134 +333,60 @@ def signup(req: SignupRequest):
 # =========================
 @app.post("/chat/start_session")
 def start_session(req: StartSessionRequest):
-    try:
-        data = supabase_insert("chat_sessions", {"user_id": req.user_id, "name": req.name})
-        session_id = data[0]["id"]
-        return {"success": True, "session_id": session_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    now = datetime.utcnow().isoformat()
+    data = supabase_insert("chat_sessions", {"user_id": req.user_id, "name": req.name, "created_at": now})
+    return {"success": True, "session_id": data[0]["id"]}
 
 @app.get("/chat/sessions/{user_id}")
 def list_sessions(user_id: str):
-    try:
-        data = supabase_select("chat_sessions", filters=[("eq", "user_id", user_id)], order_by="created_at")
-        return {"success": True, "sessions": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    data = supabase_select("chat_sessions", filters=[("eq", "user_id", user_id)], order_by="created_at")
+    return {"success": True, "sessions": data}
 
 @app.post("/chat/send")
 def chat_send(req: ChatRequest):
-    try:
-        history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
-        history_trimmed = history[-req.max_history:] if history else []
-        messages_for_model = [{"role": "system", "content": get_system_prompt("chat")}] + \
-                             [{"role": h["role"], "content": h["content"]} for h in history_trimmed] + \
-                             [{"role": "user", "content": req.prompt}]
-        answer, _ = call_openai_with_messages(messages_for_model, temperature=0.6, max_tokens=1200)
-        now = datetime.utcnow().isoformat()
-        supabase_insert("chat_history", [
-            {"session_id": req.session_id, "user_id": req.user_id, "role": "user", "content": req.prompt, "created_at": now},
-            {"session_id": req.session_id, "user_id": req.user_id, "role": "assistant", "content": answer, "created_at": now}
-        ])
-        return {"success": True, "response": answer}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
+    history_trimmed = history[-req.max_history:] if history else []
+    messages = [{"role": "system", "content": get_system_prompt("chat")}] + \
+               [{"role": h["role"], "content": h["content"]} for h in history_trimmed] + \
+               [{"role": "user", "content": req.prompt}]
+    answer, _ = call_openai_with_messages(messages, temperature=0.6, max_tokens=1200)
+    now = datetime.utcnow().isoformat()
+    supabase_insert("chat_history", [
+        {"session_id": req.session_id, "user_id": req.user_id, "role": "user", "content": req.prompt, "created_at": now},
+        {"session_id": req.session_id, "user_id": req.user_id, "role": "assistant", "content": answer, "created_at": now}
+    ])
+    return {"success": True, "response": answer}
 
 # =========================
-# Files Endpoints
-# =========================
-@app.get("/files/{session_id}")
-def list_files(session_id: str):
-    try:
-        data = supabase_select("project_files", filters=[("eq", "session_id", session_id)], order_by="created_at")
-        return {"success": True, "files": data}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/files/edit")
-def edit_file(req: EditFileRequest):
-    try:
-        supabase_update("project_files", {"content": req.new_content}, filters=[("eq", "id", req.file_id)])
-        return {"success": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/files/delete/{file_id}")
-def delete_file(file_id: str):
-    try:
-        row = supabase_select("project_files", filters=[("eq", "id", file_id)])
-        if row:
-            supabase_delete("project_files", filters=[("eq", "id", file_id)])
-            return {"success": True}
-        return {"success": False, "detail": "Arquivo não encontrado"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# =========================
-# Project Generation / GitHub / Vercel
+# Project Generation
 # =========================
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
+    project_uuid = str(uuid.uuid4())
+    history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
+    messages = [{"role": "system", "content": get_system_prompt("generate_project")}] + \
+               [{"role": h["role"], "content": h["content"]} for h in history] + \
+               [{"role": "user", "content": req.prompt}]
+    content, _ = call_openai_with_messages(messages, temperature=0.2, max_tokens=4000)
     try:
-        history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
-        messages_for_model = [{"role": "system", "content": get_system_prompt("generate_project")}] + \
-                             [{"role": h["role"], "content": h["content"]} for h in history] + \
-                             [{"role": "user", "content": req.prompt}]
-        content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
-        try:
-            files = json.loads(content)
-        except:
-            files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
-        now = datetime.utcnow().isoformat()
-        rows = [{"session_id": req.session_id, "user_id": req.user_id, "file_path": k, "content": v, "created_at": now} for k, v in files.items()]
-        supabase_insert("project_files", rows)
-        project_uuid = str(uuid.uuid4())
-        base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
-
-        github_commit_url = github_commit_files(req.session_id, files, commit_message=f"Genesis project {req.session_id}")
-        vercel_url = vercel_deploy_project(req.session_id, github_commit_url)
-
-        supabase_insert("projects", [{
-            "id": project_uuid,
-            "user_id": req.user_id,
-            "project_id": req.session_id,
-            "uuid": project_uuid,
-            "prompt": req.prompt,
-            "llm_output": json.dumps(files),
-            "github_commit_url": github_commit_url,
-            "vercel_url": vercel_url,
-            "status": "deployed",
-            "created_at": now
-        }])
-
-        return {"success": True, "files": list(files.keys()), "saved_path": base_path, "github_commit_url": github_commit_url, "vercel_url": vercel_url}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# =========================
-# Regenerate Session Files
-# =========================
-@app.post("/generate/regenerate_session_files")
-def regenerate_session_files(req: GenRequest):
-    try:
-        history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
-        messages_for_model = [{"role": "system", "content": get_system_prompt("regenerate_files")}] + \
-                             [{"role": h["role"], "content": h["content"]} for h in history] + \
-                             [{"role": "user", "content": req.prompt}]
-        content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
-        try:
-            files = json.loads(content)
-        except:
-            files = {"App.js": content}
-        now = datetime.utcnow().isoformat()
-        for fname, fcontent in files.items():
-            supabase_update("project_files", {"content": fcontent, "created_at": now}, filters=[("eq", "session_id", req.session_id), ("eq", "file_path", fname)])
-
-        github_commit_url = github_commit_files(req.session_id, files, commit_message=f"Regenerate Genesis project {req.session_id}")
-        vercel_url = vercel_deploy_project(req.session_id, github_commit_url)
-
-        supabase_update("projects", {"github_commit_url": github_commit_url, "vercel_url": vercel_url, "status": "deployed"}, filters=[("eq", "project_id", req.session_id)])
-
-        return {"success": True, "files": list(files.keys()), "github_commit_url": github_commit_url, "vercel_url": vercel_url}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        files = json.loads(content)
+    except:
+        files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
+    now = datetime.utcnow().isoformat()
+    supabase_insert("project_files", [{"session_id": req.session_id, "user_id": req.user_id, "file_path": k, "content": v, "created_at": now} for k, v in files.items()])
+    base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
+    github_commit_url = github_commit_files(req.session_id, files, commit_message=f"Genesis project {req.session_id}")
+    vercel_url = vercel_deploy_project(req.session_id, github_commit_url)
+    supabase_insert("projects", [{
+        "id": project_uuid,
+        "user_id": req.user_id,
+        "project_id": req.session_id,
+        "uuid": project_uuid,
+        "prompt": req.prompt,
+        "llm_output": json.dumps(files),
+        "github_commit_url": github_commit_url,
+        "vercel_url": vercel_url,
+        "status": "deployed",
+        "created_at": now
+    }])
+    return {"success": True, "files": list(files.keys()), "saved_path": base_path, "github_commit_url": github_commit_url, "vercel_url": vercel_url}

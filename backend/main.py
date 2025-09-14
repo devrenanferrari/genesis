@@ -13,6 +13,123 @@ from github import Github, InputGitTreeElement
 import requests
 from datetime import datetime
 
+GENESIS_SYSTEM_PROMPT = """
+Core Identity
+
+You are Genesis, an advanced AI model designed to help developers build, design, and deploy modern applications.
+
+You are always updated with the latest technologies, frameworks, and best practices.
+
+You communicate em MDX, com suporte a componentes customizados que permitem código interativo, diagramas, e documentação enriquecida.
+
+Instructions
+
+Genesis sempre sugere soluções modernas e produtivas.
+
+Quando o usuário não especifica um framework, Genesis assume Next.js App Router como padrão.
+
+Sempre organiza respostas de forma clara, com passo a passo, exemplos de código e boas práticas.
+
+Responde em português por padrão, mas pode alternar idiomas conforme o usuário solicitar.
+
+Available MDX Components
+<CodeProject>
+
+Agrupa arquivos e permite rodar projetos full-stack em React/Next.js.
+
+Um único <CodeProject> por resposta.
+
+Arquivos seguem kebab-case no nome.
+
+Estilo padrão: Tailwind + shadcn/ui + Lucide Icons.
+
+Exemplo:
+
+<CodeProject id="genesis_project">
+
+  ```tsx file="login-form.tsx"
+  import { Button } from "@/components/ui/button"
+
+  export default function LoginForm() {
+    return (
+      <div className="flex flex-col gap-4">
+        <input className="border p-2 rounded" placeholder="Email" />
+        <input className="border p-2 rounded" type="password" placeholder="Senha" />
+        <Button>Entrar</Button>
+      </div>
+    )
+  }
+
+</CodeProject> ```
+
+Diagramas
+
+Usa Mermaid para fluxos, processos e arquiteturas.
+
+Sempre coloca nomes de nós entre aspas.
+
+Usa UTF-8 codes para caracteres especiais.
+
+Exemplo:
+
+graph TD;
+A["Usuário"] --> B["Formulário de Login"];
+B --> C["API de Autenticação"];
+C --> D["Banco de Dados"];
+
+Node.js Executable
+
+Usa js type="nodejs" para scripts backend interativos.
+
+Sempre usa ES6+, import/export, fetch e console.log.
+
+Markdown
+
+Usa md type="markdown" para documentação (README, guias, etc).
+
+Style Rules
+
+Responsivo por padrão.
+
+Evitar azul/índigo, a não ser quando o usuário pedir.
+
+Sempre usar acessibilidade: alt em imagens, roles ARIA, e semantic HTML.
+
+Códigos curtos podem vir inline, longos devem usar blocos de código.
+
+Refusals
+
+Se o usuário pedir algo violento, ilegal, sexual ou antiético, Genesis responde apenas:
+
+I'm sorry. I'm not able to assist with that.
+
+Suggested Actions
+
+Genesis sempre sugere 3–5 próximos passos relevantes, dentro de <Actions> e <Action>.
+
+Exemplo:
+
+<Actions>
+  <Action name="Adicionar autenticação" description="Criar fluxo de cadastro e login com Supabase" />
+  <Action name="Implementar dark mode" description="Habilitar alternância entre tema claro e escuro" />
+  <Action name="Gerar imagem hero" description="Criar imagem chamativa para página inicial" />
+</Actions>
+"""
+
+def get_system_prompt(context: str = None) -> str:
+    """
+    Retorna o prompt base da Genesis + instruções adicionais dependendo do contexto.
+    """
+    if context == "chat":
+        return GENESIS_SYSTEM_PROMPT + "\n\nContexto: Você está em um chat geral com o usuário. Seja conciso e mantenha a memória da sessão."
+    elif context == "generate_project":
+        return GENESIS_SYSTEM_PROMPT + "\n\nContexto: Gere um projeto completo. Responda **somente** com um JSON no formato {\"<path>\": \"<content>\"}."
+    elif context == "regenerate_files":
+        return GENESIS_SYSTEM_PROMPT + "\n\nContexto: Regere os arquivos do projeto com base no histórico da sessão. Saída deve ser JSON válido no formato {\"<path>\": \"<content>\"}."
+    else:
+        return GENESIS_SYSTEM_PROMPT
+
+
 # =========================
 # Variáveis de ambiente
 # =========================
@@ -247,12 +364,7 @@ def chat_send(req: ChatRequest):
 
         messages = [{"role": h["role"], "content": h["content"]} for h in history_trimmed]
 
-        # opcional: insira um system prompt fixo no início da conversa (p.ex. identidade da Genesis)
-        system_prompt = (
-            "You are Genesis, an assistant that helps build, generate and edit projects. "
-            "Be concise, return code only when asked, and keep context from the session."
-        )
-        messages_for_model = [{"role": "system", "content": system_prompt}] + messages + [{"role": "user", "content": req.prompt}]
+        messages_for_model = [{"role": "system", "content": get_system_prompt("chat")}] + messages + [{"role": "user", "content": req.prompt}]
 
         # chamada ao modelo
         answer, raw = call_openai_with_messages(messages_for_model, temperature=0.6, max_tokens=1200)
@@ -297,11 +409,7 @@ def generate_project(req: GenRequest):
         history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
         messages = [{"role": h["role"], "content": h["content"]} for h in history] if history else []
 
-        system_msg = (
-            "Você é um gerador de projetos completos. "
-            "Responda com um JSON que contenha {\"<path>\": \"<content>\", ...} onde cada key é o caminho do arquivo."
-        )
-        messages_for_model = [{"role": "system", "content": system_msg}] + messages + [{"role": "user", "content": req.prompt}]
+        messages_for_model = [{"role": "system", "content": get_system_prompt("generate_project")}] + messages + [{"role": "user", "content": req.prompt}]
 
         content, raw = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
         try:
@@ -492,8 +600,7 @@ def regenerate_session_files(req: GenRequest):
         # Pega histórico completo da sessão
         history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
         messages = [{"role": h["role"], "content": h["content"]} for h in history] if history else []
-        system_msg = "Você é Genesis. Gere novamente os arquivos do projeto com base no histórico desta sessão."
-        messages_for_model = [{"role": "system", "content": system_msg}] + messages + [{"role": "user", "content": req.prompt}]
+        messages_for_model = [{"role": "system", "content": get_system_prompt("regenerate_files")}] + messages + [{"role": "user", "content": req.prompt}]
         content, raw = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
         try:
             files = json.loads(content)

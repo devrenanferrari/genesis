@@ -277,32 +277,47 @@ def call_openai_with_messages(messages: list, model: str = "gpt-4o", temperature
     )
     return resp.choices[0].message.content, resp
 
-def github_commit_files(project_id: str, files: dict, commit_message: str = "Deploy Genesis Project") -> str:
+def github_commit_files(project_uuid: str, files: dict, commit_message: str = "Deploy Genesis Project") -> str:
     if not repo:
         raise RuntimeError("GitHub repository not configured")
-    elements = [InputGitTreeElement(path, "100644", "blob", content) for path, content in files.items()]
+    
+    folder_prefix = f"containers/{project_uuid}/"
+    elements = []
+    for path, content in files.items():
+        elements.append(InputGitTreeElement(folder_prefix + path, "100644", "blob", content))
+    
     source = repo.get_branch(GITHUB_BRANCH)
     base_tree = repo.get_git_tree(source.commit.sha)
     tree = repo.create_git_tree(elements, base_tree)
     parent = repo.get_git_commit(source.commit.sha)
     commit = repo.create_git_commit(commit_message, tree, [parent])
     repo.get_git_ref(f"heads/{GITHUB_BRANCH}").edit(commit.sha)
-    return f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"
 
-def vercel_deploy_project(project_name: str, github_url: str) -> str:
+    # URL apontando direto para a pasta do projeto
+    return f"https://github.com/{GITHUB_REPO}/tree/{GITHUB_BRANCH}/containers/{project_uuid}"
+
+
+def vercel_deploy_project(project_uuid: str, github_url: str) -> str:
     if not VERCEL_TOKEN:
         raise RuntimeError("Vercel token not set")
+    
+    folder_path = f"containers/{project_uuid}"
     headers = {"Authorization": f"Bearer {VERCEL_TOKEN}"}
     data = {
-        "name": project_name,
+        "name": project_uuid,
         "gitSource": "github",
-        "github": {"repo": github_url.split("https://github.com/")[-1].split("/commit/")[0]},
+        "github": {
+            "repo": github_url.split("https://github.com/")[-1].split("/tree/")[0],
+            "projectName": project_uuid,
+            "rootDirectory": folder_path
+        },
         "framework": "nextjs"
     }
     resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=data)
     resp.raise_for_status()
     deployment = resp.json()
     return deployment.get("url", "")
+
 
 # =========================
 # Auth Endpoints

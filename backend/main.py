@@ -330,10 +330,6 @@ def chat_send(req: ChatRequest):
     ])
     return {"success": True, "response": answer}
 
-
-# =========================
-# Project Generation Endpoint
-# =========================
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
     try:
@@ -391,7 +387,11 @@ def generate_project(req: GenRequest):
         user = gh.get_user()
         repo = user.create_repo(name=project_uuid, private=True, auto_init=True)
 
-        elements = [InputGitTreeElement(path, "100644", "blob", content) for path, content in files.items()]
+        # Commit inicial com arquivos
+        elements = [
+            InputGitTreeElement(path, "100644", "blob", content)
+            for path, content in files.items()
+        ]
         source = repo.get_branch("main")
         base_tree = repo.get_git_tree(source.commit.sha)
         tree = repo.create_git_tree(elements, base_tree)
@@ -401,80 +401,63 @@ def generate_project(req: GenRequest):
         github_repo_url = f"https://github.com/{user.login}/{project_uuid}.git"
 
         # --------------------------
-        # 7️⃣ Criar projeto e deploy na Vercel
+        # 7️⃣ Criar projeto na Vercel
         # --------------------------
-        def vercel_create_project_and_deploy(project_uuid: str, github_repo_url: str) -> str:
-            import time
-            if not VERCEL_TOKEN:
-                raise RuntimeError("Vercel token not set")
+        if not VERCEL_TOKEN:
+            raise RuntimeError("Vercel token not set")
+        headers = {
+            "Authorization": f"Bearer {VERCEL_TOKEN}",
+            "Content-Type": "application/json"
+        }
 
-            headers = {
-                "Authorization": f"Bearer {VERCEL_TOKEN}",
-                "Content-Type": "application/json"
-            }
-            repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
-
-            # Criar ou buscar projeto Vercel
-            proj_payload = {
+        # Criar projeto Vercel
+        project_resp = requests.post(
+            "https://api.vercel.com/v11/projects",
+            headers=headers,
+            json={
                 "name": project_uuid,
-                "gitSource": "github",
-                "github": {"repo": repo_path, "branch": "main"},
+                "framework": "nextjs",
+                "gitRepository": {"type": "github", "repo": f"{user.login}/{project_uuid}"},
+                "rootDirectory": f"containers/{project_uuid}"
             }
-            if VERCEL_TEAM_ID:
-                proj_payload["teamId"] = VERCEL_TEAM_ID
-
-            proj_resp = requests.post("https://api.vercel.com/v13/projects", headers=headers, json=proj_payload)
-            if proj_resp.status_code not in (200, 201):
-                raise RuntimeError(f"Failed to create project: {proj_resp.text}")
-            project_data = proj_resp.json()
-            project_id = project_data.get("id") or project_data.get("projectId") or project_uuid
-
-            # Criar deploy
-            deploy_payload = {
-                "project": project_id,
-                "gitSource": "github",
-                "github": {"repo": repo_path, "branch": "main"},
-            }
-            deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_payload)
-            deploy_resp.raise_for_status()
-            deploy_data = deploy_resp.json()
-            deployment_id = deploy_data["id"]
-
-            # Polling até READY
-            vercel_url = ""
-            for _ in range(60):
-                status_resp = requests.get(f"https://api.vercel.com/v13/deployments/{deployment_id}", headers=headers)
-                status_resp.raise_for_status()
-                status_data = status_resp.json()
-                status = status_data.get("state")
-                if status == "READY":
-                    vercel_url = status_data.get("url")
-                    break
-                elif status in ("ERROR", "CANCELED"):
-                    raise RuntimeError(f"Vercel deployment failed: {status_data}")
-                time.sleep(5)
-
-            if not vercel_url:
-                raise RuntimeError("Vercel deployment did not become READY in time")
-            return vercel_url
-
-        vercel_url = vercel_create_project_and_deploy(project_uuid, github_repo_url)
+        )
+        project_resp.raise_for_status()
 
         # --------------------------
-        # 8️⃣ Registrar projeto no Supabase
+        # 8️⃣ Criar deploy na Vercel
         # --------------------------
-        supabase_insert("projects", [dict(
-            id=project_uuid,
-            user_id=req.user_id,
-            project_id=req.session_id,
-            uuid=project_uuid,
-            prompt=req.prompt,
-            llm_output=json.dumps(files),
-            github_commit_url=github_repo_url,
-            vercel_url=vercel_url,
-            status="deployed",
-            created_at=now
-        )])
+        deploy_resp = requests.post(
+            "https://api.vercel.com/v13/deployments",
+            headers=headers,
+            json={
+                "name": project_uuid,
+                "project": project_uuid,
+                "gitMetadata": {
+                    "remoteUrl": github_repo_url,
+                    "commitRef": "main",
+                    "commitSha": commit.sha
+                },
+                "target": "production"
+            }
+        )
+        deploy_resp.raise_for_status()
+        vercel_url = deploy_resp.json().get("url", "")
+
+        # --------------------------
+        # 9️⃣ Registrar projeto no Supabase
+        # --------------------------
+        supabase_insert("projects", [{
+            "id": project_uuid,
+            "user_id": req.user_id,
+            "project_id": req.session_id,
+            "uuid": project_uuid,
+            "prompt": req.prompt,
+            "llm_output": json.dumps(files),
+            "github_commit_url": github_repo_url,
+            "vercel_url": vercel_url,
+            "status": "deployed",
+            "created_at": now
+        }])
 
         return {
             "success": True,
@@ -486,9 +469,3 @@ def generate_project(req: GenRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-    if not vercel_url:
-        raise RuntimeError("Vercel deployment did not become READY in time")
-
-    return vercel_url

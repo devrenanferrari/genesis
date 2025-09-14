@@ -377,31 +377,82 @@ def chat_send(req: ChatRequest):
 # =========================
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
-    project_uuid = str(uuid.uuid4())
-    history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
-    messages = [{"role": "system", "content": get_system_prompt("generate_project")}] + \
-               [{"role": h["role"], "content": h["content"]} for h in history] + \
-               [{"role": "user", "content": req.prompt}]
-    content, _ = call_openai_with_messages(messages, temperature=0.2, max_tokens=4000)
     try:
-        files = json.loads(content)
-    except:
-        files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
-    now = datetime.utcnow().isoformat()
-    supabase_insert("project_files", [{"session_id": req.session_id, "user_id": req.user_id, "file_path": k, "content": v, "created_at": now} for k, v in files.items()])
-    base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
-    github_commit_url = github_commit_files(req.session_id, files, commit_message=f"Genesis project {req.session_id}")
-    vercel_url = vercel_deploy_project(req.session_id, github_commit_url)
-    supabase_insert("projects", [{
-        "id": project_uuid,
-        "user_id": req.user_id,
-        "project_id": req.session_id,
-        "uuid": project_uuid,
-        "prompt": req.prompt,
-        "llm_output": json.dumps(files),
-        "github_commit_url": github_commit_url,
-        "vercel_url": vercel_url,
-        "status": "deployed",
-        "created_at": now
-    }])
-    return {"success": True, "files": list(files.keys()), "saved_path": base_path, "github_commit_url": github_commit_url, "vercel_url": vercel_url}
+        # --------------------------
+        # 1. Buscar histórico do chat
+        # --------------------------
+        history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
+        messages_for_model = [{"role": "system", "content": get_system_prompt("generate_project")}] + \
+                             [{"role": h["role"], "content": h["content"]} for h in history] + \
+                             [{"role": "user", "content": req.prompt}]
+        
+        # --------------------------
+        # 2. Chamar OpenAI para gerar arquivos do projeto
+        # --------------------------
+        content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
+        try:
+            files = json.loads(content)
+        except:
+            files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
+        
+        # --------------------------
+        # 3. Gerar UUID do projeto
+        # --------------------------
+        project_uuid = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+
+        # --------------------------
+        # 4. Salvar arquivos no Supabase
+        # --------------------------
+        rows = [
+            {
+                "session_id": req.session_id,
+                "user_id": req.user_id,
+                "file_path": k,
+                "content": v,
+                "created_at": now
+            } for k, v in files.items()
+        ]
+        supabase_insert("project_files", rows)
+
+        # --------------------------
+        # 5. Salvar arquivos localmente
+        # --------------------------
+        base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
+
+        # --------------------------
+        # 6. Commit no GitHub dentro da pasta containers/<project_uuid>/
+        # --------------------------
+        github_commit_url = github_commit_files(project_uuid, files, commit_message=f"Genesis project {req.session_id}")
+
+        # --------------------------
+        # 7. Deploy no Vercel apontando para a pasta correta
+        # --------------------------
+        vercel_url = vercel_deploy_project(project_uuid, github_commit_url)
+
+        # --------------------------
+        # 8. Registrar projeto no Supabase
+        # --------------------------
+        supabase_insert("projects", [{
+            "id": project_uuid,
+            "user_id": req.user_id,
+            "project_id": req.session_id,
+            "uuid": project_uuid,
+            "prompt": req.prompt,
+            "llm_output": json.dumps(files),
+            "github_commit_url": github_commit_url,
+            "vercel_url": vercel_url,
+            "status": "deployed",
+            "created_at": now
+        }])
+
+        return {
+            "success": True,
+            "files": list(files.keys()),
+            "saved_path": base_path,
+            "github_commit_url": github_commit_url,
+            "vercel_url": vercel_url
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

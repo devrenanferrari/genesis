@@ -346,7 +346,7 @@ def generate_project(req: GenRequest):
                              [{"role": "user", "content": req.prompt}]
 
         # --------------------------
-        # 2️⃣ Chamar OpenAI para gerar arquivos do projeto
+        # 2️⃣ Chamar OpenAI para gerar arquivos
         # --------------------------
         content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
         try:
@@ -355,7 +355,7 @@ def generate_project(req: GenRequest):
             files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
 
         # --------------------------
-        # 3️⃣ Gerar UUID do projeto
+        # 3️⃣ Criar UUID do projeto
         # --------------------------
         project_uuid = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
@@ -388,7 +388,22 @@ def generate_project(req: GenRequest):
         repo = user.create_repo(name=project_uuid, private=True, auto_init=False)
 
         # --------------------------
-        # 7️⃣ Criar projeto na Vercel
+        # 7️⃣ Commit inicial (branch main)
+        # --------------------------
+        elements = [
+            InputGitTreeElement(path, "100644", "blob", content)
+            for path, content in files.items()
+        ]
+        empty_tree = repo.create_git_tree([])
+        empty_commit = repo.create_git_commit("Initial empty commit", empty_tree, [])
+        repo.create_git_ref("refs/heads/main", empty_commit.sha)
+
+        tree = repo.create_git_tree(elements)
+        commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [empty_commit])
+        repo.get_git_ref("heads/main").edit(commit.sha)
+
+        # --------------------------
+        # 8️⃣ Criar projeto na Vercel
         # --------------------------
         if not VERCEL_TOKEN:
             raise RuntimeError("Vercel token not set")
@@ -406,7 +421,6 @@ def generate_project(req: GenRequest):
                 "gitRepository": {"type": "github", "repo": repo_path},
                 "framework": "nextjs",
                 "rootDirectory": None,
-                "skipGitConnectDuringLink": True,
                 "installCommand": "npm install",
                 "buildCommand": "npm run build",
                 "outputDirectory": ".next"
@@ -415,22 +429,7 @@ def generate_project(req: GenRequest):
         project_resp.raise_for_status()
 
         # --------------------------
-        # 8️⃣ Commit inicial com arquivos
-        # --------------------------
-        elements = [
-            InputGitTreeElement(path, "100644", "blob", content)
-            for path, content in files.items()
-        ]
-        # Criar branch main manualmente
-        empty_commit = repo.create_git_commit("Init empty", repo.create_git_tree([]), [])
-        repo.create_git_ref("refs/heads/main", empty_commit.sha)
-
-        tree = repo.create_git_tree(elements)
-        commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [empty_commit])
-        repo.get_git_ref("heads/main").edit(commit.sha)
-
-        # --------------------------
-        # 9️⃣ Commit fake para disparar deploy
+        # 9️⃣ Commit fake → dispara deploy
         # --------------------------
         repo.create_file(".vercel_trigger", "Trigger deploy", "Genesis deploy trigger", branch="main")
 
@@ -463,3 +462,4 @@ def generate_project(req: GenRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+

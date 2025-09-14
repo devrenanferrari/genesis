@@ -389,13 +389,9 @@ def generate_project(req: GenRequest):
         if not gh:
             raise RuntimeError("GitHub client not configured")
         user = gh.get_user()
-        repo = user.create_repo(name=project_uuid, private=True, auto_init=True)  # Cria main branch
+        repo = user.create_repo(name=project_uuid, private=True, auto_init=True)
 
-        # Criar commit inicial com arquivos
-        elements = [
-            InputGitTreeElement(path, "100644", "blob", content)
-            for path, content in files.items()
-        ]
+        elements = [InputGitTreeElement(path, "100644", "blob", content) for path, content in files.items()]
         source = repo.get_branch("main")
         base_tree = repo.get_git_tree(source.commit.sha)
         tree = repo.create_git_tree(elements, base_tree)
@@ -407,6 +403,61 @@ def generate_project(req: GenRequest):
         # --------------------------
         # 7️⃣ Criar projeto e deploy na Vercel
         # --------------------------
+        def vercel_create_project_and_deploy(project_uuid: str, github_repo_url: str) -> str:
+            import time
+            if not VERCEL_TOKEN:
+                raise RuntimeError("Vercel token not set")
+
+            headers = {
+                "Authorization": f"Bearer {VERCEL_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
+
+            # Criar ou buscar projeto Vercel
+            proj_payload = {
+                "name": project_uuid,
+                "gitSource": "github",
+                "github": {"repo": repo_path, "branch": "main"},
+            }
+            if VERCEL_TEAM_ID:
+                proj_payload["teamId"] = VERCEL_TEAM_ID
+
+            proj_resp = requests.post("https://api.vercel.com/v13/projects", headers=headers, json=proj_payload)
+            if proj_resp.status_code not in (200, 201):
+                raise RuntimeError(f"Failed to create project: {proj_resp.text}")
+            project_data = proj_resp.json()
+            project_id = project_data.get("id") or project_data.get("projectId") or project_uuid
+
+            # Criar deploy
+            deploy_payload = {
+                "project": project_id,
+                "gitSource": "github",
+                "github": {"repo": repo_path, "branch": "main"},
+            }
+            deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_payload)
+            deploy_resp.raise_for_status()
+            deploy_data = deploy_resp.json()
+            deployment_id = deploy_data["id"]
+
+            # Polling até READY
+            vercel_url = ""
+            for _ in range(60):
+                status_resp = requests.get(f"https://api.vercel.com/v13/deployments/{deployment_id}", headers=headers)
+                status_resp.raise_for_status()
+                status_data = status_resp.json()
+                status = status_data.get("state")
+                if status == "READY":
+                    vercel_url = status_data.get("url")
+                    break
+                elif status in ("ERROR", "CANCELED"):
+                    raise RuntimeError(f"Vercel deployment failed: {status_data}")
+                time.sleep(5)
+
+            if not vercel_url:
+                raise RuntimeError("Vercel deployment did not become READY in time")
+            return vercel_url
+
         vercel_url = vercel_create_project_and_deploy(project_uuid, github_repo_url)
 
         # --------------------------
@@ -436,55 +487,6 @@ def generate_project(req: GenRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# =========================
-# Vercel Deployment Helper
-# =========================
-def vercel_create_project_and_deploy(project_uuid: str, github_repo_url: str) -> str:
-    import time
-    if not VERCEL_TOKEN:
-        raise RuntimeError("Vercel token not set")
-    
-    headers = {
-        "Authorization": f"Bearer {VERCEL_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
-
-    # Criar projeto Vercel (ignora se já existir)
-    proj_payload = {
-        "name": project_uuid,
-        "gitSource": "github",
-        "github": {"repo": repo_path, "branch": "main"},
-        "framework": "nextjs",
-    }
-    requests.post("https://api.vercel.com/v13/projects", headers=headers, json=proj_payload)
-
-    # Criar deploy
-    deploy_payload = {
-        "name": project_uuid,
-        "gitSource": "github",
-        "github": {"repo": repo_path, "branch": "main"},
-        "framework": "nextjs",
-    }
-    deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_payload)
-    deploy_resp.raise_for_status()
-    deploy_data = deploy_resp.json()
-    deployment_id = deploy_data["id"]
-
-    # Polling até deploy READY
-    vercel_url = ""
-    for _ in range(60):  # 60 tentativas ~ 5 minutos
-        status_resp = requests.get(f"https://api.vercel.com/v13/deployments/{deployment_id}", headers=headers)
-        status_resp.raise_for_status()
-        status_data = status_resp.json()
-        status = status_data.get("state", "")
-        if status == "READY":
-            vercel_url = status_data.get("url", "")
-            break
-        elif status in ("ERROR", "CANCELED"):
-            raise RuntimeError(f"Vercel deployment failed: {status_data}")
-        time.sleep(5)
 
     if not vercel_url:
         raise RuntimeError("Vercel deployment did not become READY in time")

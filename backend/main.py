@@ -277,58 +277,6 @@ def call_openai_with_messages(messages: list, model: str = "gpt-4o", temperature
     )
     return resp.choices[0].message.content, resp
 
-def github_create_repo_and_commit(project_uuid: str, files: dict) -> str:
-    if not gh:
-        raise RuntimeError("GitHub client not configured")
-
-    # 1. Cria repo
-    user = gh.get_user()
-    repo = user.create_repo(name=project_uuid, private=True)
-
-    # 2. Comita arquivos
-    elements = []
-    for path, content in files.items():
-        elements.append(InputGitTreeElement(path, "100644", "blob", content))
-
-    source = repo.get_branch("main")
-    base_tree = repo.get_git_tree(source.commit.sha)
-    tree = repo.create_git_tree(elements, base_tree)
-    parent = repo.get_git_commit(source.commit.sha)
-    commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [parent])
-    repo.get_git_ref("heads/main").edit(commit.sha)
-
-    return f"https://github.com/{user.login}/{project_uuid}.git"
-
-
-def vercel_create_project_and_deploy(project_uuid: str, github_repo_url: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {VERCEL_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git","")
-
-    # Cria projeto Vercel
-    project_data = {
-        "name": project_uuid,
-        "gitSource": "github",
-        "github": {"repo": repo_path, "branch": "main"},
-        "framework": "nextjs",
-        "teamId": VERCEL_TEAM_ID
-    }
-    requests.post("https://api.vercel.com/v13/projects", headers=headers)
-
-    # Deploy
-    deploy_data = {
-        "name": project_uuid,
-        "gitSource": "github",
-        "github": {"repo": repo_path, "branch": "main"},
-        "framework": "nextjs"
-    }
-    deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_data)
-    deploy_resp.raise_for_status()
-    return deploy_resp.json().get("url", "")
-
 # =========================
 # Auth Endpoints
 # =========================
@@ -389,30 +337,30 @@ def chat_send(req: ChatRequest):
 def generate_project(req: GenRequest):
     try:
         # --------------------------
-        # 1. Buscar histórico do chat
+        # 1️⃣ Buscar histórico do chat
         # --------------------------
         history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
         messages_for_model = [{"role": "system", "content": get_system_prompt("generate_project")}] + \
                              [{"role": h["role"], "content": h["content"]} for h in history] + \
                              [{"role": "user", "content": req.prompt}]
-        
+
         # --------------------------
-        # 2. Chamar OpenAI para gerar arquivos do projeto
+        # 2️⃣ Chamar OpenAI para gerar arquivos do projeto
         # --------------------------
         content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
         try:
             files = json.loads(content)
         except:
             files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
-        
+
         # --------------------------
-        # 3. Gerar UUID do projeto
+        # 3️⃣ Gerar UUID do projeto
         # --------------------------
         project_uuid = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
 
         # --------------------------
-        # 4. Salvar arquivos no Supabase
+        # 4️⃣ Salvar arquivos no Supabase
         # --------------------------
         rows = [
             {
@@ -426,22 +374,69 @@ def generate_project(req: GenRequest):
         supabase_insert("project_files", rows)
 
         # --------------------------
-        # 5. Salvar arquivos localmente
+        # 5️⃣ Salvar arquivos localmente
         # --------------------------
         base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
 
         # --------------------------
-        # 6. Commit no GitHub dentro da pasta containers/<project_uuid>/
+        # 6️⃣ Criar repo GitHub e commitar arquivos
         # --------------------------
-        github_commit_url = github_create_repo_and_commit(project_uuid, files, commit_message=f"Genesis project {req.session_id}")
+        def github_create_repo_and_commit(project_uuid: str, files: dict) -> str:
+            if not gh:
+                raise RuntimeError("GitHub client not configured")
+            user = gh.get_user()
+            repo = user.create_repo(name=project_uuid, private=True)
+            elements = []
+            for path, content in files.items():
+                elements.append(InputGitTreeElement(path, "100644", "blob", content))
+            # Inicializar commit
+            source = repo.get_branch("main")
+            base_tree = repo.get_git_tree(source.commit.sha)
+            tree = repo.create_git_tree(elements, base_tree)
+            parent = repo.get_git_commit(source.commit.sha)
+            commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [parent])
+            repo.get_git_ref("heads/main").edit(commit.sha)
+            return f"https://github.com/{user.login}/{project_uuid}.git"
+
+        github_repo_url = github_create_repo_and_commit(project_uuid, files)
 
         # --------------------------
-        # 7. Deploy no Vercel apontando para a pasta correta
+        # 7️⃣ Criar projeto e deploy na Vercel
         # --------------------------
-        vercel_url = vercel_create_project_and_deploy(project_uuid, github_commit_url)
+        def vercel_create_project_and_deploy(project_uuid: str, github_repo_url: str) -> str:
+            if not VERCEL_TOKEN:
+                raise RuntimeError("Vercel token not set")
+            headers = {
+                "Authorization": f"Bearer {VERCEL_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git","")
+
+            # Criar projeto Vercel
+            project_data = {
+                "name": project_uuid,
+                "gitSource": "github",
+                "github": {"repo": repo_path, "branch": "main"},
+                "framework": "nextjs",
+                "teamId": VERCEL_TEAM_ID
+            }
+            requests.post("https://api.vercel.com/v13/projects", headers=headers)
+
+            # Criar deploy
+            deploy_data = {
+                "name": project_uuid,
+                "gitSource": "github",
+                "github": {"repo": repo_path, "branch": "main"},
+                "framework": "nextjs"
+            }
+            deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_data)
+            deploy_resp.raise_for_status()
+            return deploy_resp.json().get("url", "")
+
+        vercel_url = vercel_create_project_and_deploy(project_uuid, github_repo_url)
 
         # --------------------------
-        # 8. Registrar projeto no Supabase
+        # 8️⃣ Registrar projeto no Supabase
         # --------------------------
         supabase_insert("projects", [{
             "id": project_uuid,
@@ -450,7 +445,7 @@ def generate_project(req: GenRequest):
             "uuid": project_uuid,
             "prompt": req.prompt,
             "llm_output": json.dumps(files),
-            "github_commit_url": github_commit_url,
+            "github_commit_url": github_repo_url,
             "vercel_url": vercel_url,
             "status": "deployed",
             "created_at": now
@@ -460,7 +455,7 @@ def generate_project(req: GenRequest):
             "success": True,
             "files": list(files.keys()),
             "saved_path": base_path,
-            "github_commit_url": github_commit_url,
+            "github_commit_url": github_repo_url,
             "vercel_url": vercel_url
         }
 

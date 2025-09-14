@@ -429,6 +429,10 @@ def generate_project(req: GenRequest):
         )
         project_resp.raise_for_status()
 
+                # --------------------------
+        # 8️⃣ Commit fake para disparar deploy
+        # --------------------------
+        repo.create_file(".vercel_trigger", "Trigger Vercel Deploy", "Deploy trigger", branch="main")
 
         # --------------------------
         # 9️⃣ Registrar projeto no Supabase

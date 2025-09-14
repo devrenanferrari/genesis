@@ -277,76 +277,57 @@ def call_openai_with_messages(messages: list, model: str = "gpt-4o", temperature
     )
     return resp.choices[0].message.content, resp
 
-def github_commit_files(project_uuid: str, files: dict, commit_message: str = "Deploy Genesis Project") -> str:
-    if not repo:
-        raise RuntimeError("GitHub repository not configured")
-    
-    folder_prefix = f"containers/{project_uuid}/"
+def github_create_repo_and_commit(project_uuid: str, files: dict) -> str:
+    if not gh:
+        raise RuntimeError("GitHub client not configured")
+
+    # 1. Cria repo
+    user = gh.get_user()
+    repo = user.create_repo(name=project_uuid, private=True)
+
+    # 2. Comita arquivos
     elements = []
     for path, content in files.items():
-        elements.append(InputGitTreeElement(folder_prefix + path, "100644", "blob", content))
-    
-    source = repo.get_branch(GITHUB_BRANCH)
+        elements.append(InputGitTreeElement(path, "100644", "blob", content))
+
+    source = repo.get_branch("main")
     base_tree = repo.get_git_tree(source.commit.sha)
     tree = repo.create_git_tree(elements, base_tree)
     parent = repo.get_git_commit(source.commit.sha)
-    commit = repo.create_git_commit(commit_message, tree, [parent])
-    repo.get_git_ref(f"heads/{GITHUB_BRANCH}").edit(commit.sha)
+    commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [parent])
+    repo.get_git_ref("heads/main").edit(commit.sha)
 
-    # URL apontando direto para a pasta do projeto
-    return f"https://github.com/{GITHUB_REPO}/tree/{GITHUB_BRANCH}/containers/{project_uuid}"
+    return f"https://github.com/{user.login}/{project_uuid}.git"
 
 
-def vercel_deploy_project(project_uuid: str, github_url: str) -> str:
-    if not VERCEL_TOKEN:
-        raise RuntimeError("Vercel token not set")
-    
+def vercel_create_project_and_deploy(project_uuid: str, github_repo_url: str) -> str:
     headers = {
         "Authorization": f"Bearer {VERCEL_TOKEN}",
         "Content-Type": "application/json"
     }
 
-    repo_path = github_url.split("https://github.com/")[-1].split("/commit/")[0]
-    
-    # 1️⃣ Cria projeto (ignora erro se já existir)
+    repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git","")
+
+    # Cria projeto Vercel
     project_data = {
         "name": project_uuid,
         "gitSource": "github",
-        "github": {
-            "repo": repo_path,
-            "org": repo_path.split("/")[0],
-            "branch": GITHUB_BRANCH,
-            "deploy": False  # só cria o projeto
-        },
-        "rootDirectory": f"containers/{project_uuid}",
+        "github": {"repo": repo_path, "branch": "main"},
         "framework": "nextjs",
         "teamId": VERCEL_TEAM_ID
     }
-    project_resp = requests.post("https://api.vercel.com/v13/projects", headers=headers, json=project_data)
-    
-    if project_resp.status_code not in (200, 201, 409):  # 409 = já existe
-        project_resp.raise_for_status()
+    requests.post("https://api.vercel.com/v13/projects", headers=headers)
 
-    # 2️⃣ Cria o deploy
+    # Deploy
     deploy_data = {
         "name": project_uuid,
         "gitSource": "github",
-        "github": {
-            "repo": repo_path,
-            "org": repo_path.split("/")[0],
-            "branch": GITHUB_BRANCH,
-        },
-        "rootDirectory": f"containers/{project_uuid}",
+        "github": {"repo": repo_path, "branch": "main"},
         "framework": "nextjs"
     }
     deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_data)
     deploy_resp.raise_for_status()
-    
-    deployment = deploy_resp.json()
-    return deployment.get("url", "")
-
-
-
+    return deploy_resp.json().get("url", "")
 
 # =========================
 # Auth Endpoints
@@ -452,12 +433,12 @@ def generate_project(req: GenRequest):
         # --------------------------
         # 6. Commit no GitHub dentro da pasta containers/<project_uuid>/
         # --------------------------
-        github_commit_url = github_commit_files(project_uuid, files, commit_message=f"Genesis project {req.session_id}")
+        github_commit_url = github_create_repo_and_commit(project_uuid, files, commit_message=f"Genesis project {req.session_id}")
 
         # --------------------------
         # 7. Deploy no Vercel apontando para a pasta correta
         # --------------------------
-        vercel_url = vercel_deploy_project(project_uuid, github_commit_url)
+        vercel_url = vercel_create_project_and_deploy(project_uuid, github_commit_url)
 
         # --------------------------
         # 8. Registrar projeto no Supabase

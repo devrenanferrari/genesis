@@ -305,50 +305,46 @@ def vercel_deploy_project(project_uuid: str, github_url: str) -> str:
         "Authorization": f"Bearer {VERCEL_TOKEN}",
         "Content-Type": "application/json"
     }
-    
-    # Extrai repo path do github_url
+
     repo_path = github_url.split("https://github.com/")[-1].split("/commit/")[0]
     
-    # Payload para criar novo projeto na Vercel
-    data = {
+    # 1️⃣ Cria projeto (ignora erro se já existir)
+    project_data = {
         "name": project_uuid,
         "gitSource": "github",
         "github": {
             "repo": repo_path,
             "org": repo_path.split("/")[0],
             "branch": GITHUB_BRANCH,
-            "deploy": True
+            "deploy": False  # só cria o projeto
         },
-        "rootDirectory": f"containers/{project_uuid}",  # pasta raiz do projeto
+        "rootDirectory": f"containers/{project_uuid}",
         "framework": "nextjs",
         "teamId": VERCEL_TEAM_ID
     }
+    project_resp = requests.post("https://api.vercel.com/v13/projects", headers=headers, json=project_data)
     
-    resp = requests.post("https://api.vercel.com/v13/projects", headers=headers, json=data)
+    if project_resp.status_code not in (200, 201, 409):  # 409 = já existe
+        project_resp.raise_for_status()
+
+    # 2️⃣ Cria o deploy
+    deploy_data = {
+        "name": project_uuid,
+        "gitSource": "github",
+        "github": {
+            "repo": repo_path,
+            "org": repo_path.split("/")[0],
+            "branch": GITHUB_BRANCH,
+        },
+        "rootDirectory": f"containers/{project_uuid}",
+        "framework": "nextjs"
+    }
+    deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_data)
+    deploy_resp.raise_for_status()
     
-    if resp.status_code == 409:
-        # Projeto já existe, apenas cria um deploy
-        deploy_data = {
-            "name": project_uuid,
-            "gitSource": "github",
-            "github": {
-                "repo": repo_path,
-                "org": repo_path.split("/")[0],
-                "branch": GITHUB_BRANCH,
-            },
-            "rootDirectory": f"containers/{project_uuid}",
-            "framework": "nextjs"
-        }
-        deploy_resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=deploy_data)
-        deploy_resp.raise_for_status()
-        deployment = deploy_resp.json()
-        return deployment.get("url", "")
-    
-    resp.raise_for_status()
-    project_info = resp.json()
-    
-    # Retorna a URL do projeto Vercel criado
-    return project_info.get("url", "")
+    deployment = deploy_resp.json()
+    return deployment.get("url", "")
+
 
 
 

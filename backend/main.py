@@ -418,7 +418,7 @@ def generate_project(req: GenRequest):
                 "name": project_uuid,
                 "gitRepository": {"type": "github", "repo": repo_path},
                 "framework": "nextjs",
-                "rootDirectory": f"containers/{project_uuid}",
+                "rootDirectory": "/",
                 "skipGitConnectDuringLink": True,
                 "installCommand": "npm install",
                 "buildCommand": "npm run build",

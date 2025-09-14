@@ -15,6 +15,9 @@ from supabase import create_client
 from github import Github, InputGitTreeElement
 import requests
 
+import ast
+from pathlib import Path
+
 # =========================
 # Constants / System Prompt
 # =========================
@@ -289,15 +292,22 @@ def generate_project(req: GenRequest):
                              [{"role": h["role"], "content": h["content"]} for h in history] + \
                              [{"role": "user", "content": req.prompt}]
 
-        # --------------------------
+
         # 2️⃣ Chamar OpenAI para gerar arquivos do projeto
-        # --------------------------
         content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
+
+        # 🔹 Fallback seguro para JSON inválido
+        files = {}
         try:
             files = json.loads(content)
-        except:
-            files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
+        except json.JSONDecodeError:
+            try:
+                files = ast.literal_eval(content)
+            except:
+                files = {"app/page.tsx": content}
 
+        # garante que todos os paths são strings corretas
+        files = {str(Path(k)): v for k, v in files.items()}
         # --------------------------
         # 3️⃣ Gerar UUID do projeto
         # --------------------------

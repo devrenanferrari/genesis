@@ -279,6 +279,40 @@ def call_openai_with_messages(messages: list, model: str = "gpt-4o", temperature
         raise
 
 # =========================
+# GitHub / Vercel Helpers
+# =========================
+def github_commit_files(project_id: str, files: dict, commit_message: str = "Deploy Genesis Project") -> str:
+    if not repo:
+        raise RuntimeError("GitHub repository not configured")
+    
+    elements = []
+    for path, content in files.items():
+        elements.append(InputGitTreeElement(path, "100644", "blob", content))
+    
+    source = repo.get_branch(GITHUB_BRANCH)
+    base_tree = repo.get_git_tree(source.commit.sha)
+    tree = repo.create_git_tree(elements, base_tree)
+    parent = repo.get_git_commit(source.commit.sha)
+    commit = repo.create_git_commit(commit_message, tree, [parent])
+    repo.get_git_ref(f"heads/{GITHUB_BRANCH}").edit(commit.sha)
+    return f"https://github.com/{GITHUB_REPO}/commit/{commit.sha}"
+
+def vercel_deploy_project(project_name: str, github_url: str) -> str:
+    if not VERCEL_TOKEN:
+        raise RuntimeError("Vercel token not set")
+    headers = {"Authorization": f"Bearer {VERCEL_TOKEN}"}
+    data = {
+        "name": project_name,
+        "gitSource": "github",
+        "github": {"repo": github_url.split("https://github.com/")[-1].split("/commit/")[0]},
+        "framework": "nextjs"
+    }
+    resp = requests.post("https://api.vercel.com/v13/deployments", headers=headers, json=data)
+    resp.raise_for_status()
+    deployment = resp.json()
+    return deployment.get("url", "")
+
+# =========================
 # Auth Endpoints
 # =========================
 @app.post("/auth/login")
@@ -390,7 +424,24 @@ def generate_project(req: GenRequest):
         supabase_insert("project_files", rows)
         project_uuid = str(uuid.uuid4())
         base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
-        return {"success": True, "files": list(files.keys()), "saved_path": base_path}
+
+        github_commit_url = github_commit_files(req.session_id, files, commit_message=f"Genesis project {req.session_id}")
+        vercel_url = vercel_deploy_project(req.session_id, github_commit_url)
+
+        supabase_insert("projects", [{
+            "id": project_uuid,
+            "user_id": req.user_id,
+            "project_id": req.session_id,
+            "uuid": project_uuid,
+            "prompt": req.prompt,
+            "llm_output": json.dumps(files),
+            "github_commit_url": github_commit_url,
+            "vercel_url": vercel_url,
+            "status": "deployed",
+            "created_at": now
+        }])
+
+        return {"success": True, "files": list(files.keys()), "saved_path": base_path, "github_commit_url": github_commit_url, "vercel_url": vercel_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -412,6 +463,12 @@ def regenerate_session_files(req: GenRequest):
         now = datetime.utcnow().isoformat()
         for fname, fcontent in files.items():
             supabase_update("project_files", {"content": fcontent, "created_at": now}, filters=[("eq", "session_id", req.session_id), ("eq", "file_path", fname)])
-        return {"success": True, "files": list(files.keys())}
+
+        github_commit_url = github_commit_files(req.session_id, files, commit_message=f"Regenerate Genesis project {req.session_id}")
+        vercel_url = vercel_deploy_project(req.session_id, github_commit_url)
+
+        supabase_update("projects", {"github_commit_url": github_commit_url, "vercel_url": vercel_url, "status": "deployed"}, filters=[("eq", "project_id", req.session_id)])
+
+        return {"success": True, "files": list(files.keys()), "github_commit_url": github_commit_url, "vercel_url": vercel_url}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -346,7 +346,7 @@ def generate_project(req: GenRequest):
                              [{"role": "user", "content": req.prompt}]
 
         # --------------------------
-        # 2️⃣ Chamar OpenAI para gerar arquivos
+        # 2️⃣ Chamar OpenAI para gerar arquivos do projeto
         # --------------------------
         content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
         try:
@@ -355,7 +355,7 @@ def generate_project(req: GenRequest):
             files = {"App.js": content, "README.md": f"# Projeto: {req.prompt}"}
 
         # --------------------------
-        # 3️⃣ Criar UUID do projeto
+        # 3️⃣ Gerar UUID do projeto
         # --------------------------
         project_uuid = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
@@ -380,30 +380,27 @@ def generate_project(req: GenRequest):
         base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
 
         # --------------------------
-        # 6️⃣ Criar repo GitHub vazio
+        # 6️⃣ Criar repo GitHub e commit inicial
         # --------------------------
         if not gh:
             raise RuntimeError("GitHub client not configured")
         user = gh.get_user()
-        repo = user.create_repo(name=project_uuid, private=True, auto_init=False)
+        repo = user.create_repo(name=project_uuid, private=True, auto_init=True)
 
-        # --------------------------
-        # 7️⃣ Commit inicial (branch main)
-        # --------------------------
         elements = [
             InputGitTreeElement(path, "100644", "blob", content)
             for path, content in files.items()
         ]
-        empty_tree = repo.create_git_tree([])
-        empty_commit = repo.create_git_commit("Initial empty commit", empty_tree, [])
-        repo.create_git_ref("refs/heads/main", empty_commit.sha)
-
-        tree = repo.create_git_tree(elements)
-        commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [empty_commit])
+        source = repo.get_branch("main")
+        base_tree = repo.get_git_tree(source.commit.sha)
+        tree = repo.create_git_tree(elements, base_tree)
+        parent = repo.get_git_commit(source.commit.sha)
+        commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [parent])
         repo.get_git_ref("heads/main").edit(commit.sha)
+        github_repo_url = f"https://github.com/{user.login}/{project_uuid}.git"
 
         # --------------------------
-        # 8️⃣ Criar projeto na Vercel
+        # 7️⃣ Criar projeto na Vercel
         # --------------------------
         if not VERCEL_TOKEN:
             raise RuntimeError("Vercel token not set")
@@ -411,8 +408,9 @@ def generate_project(req: GenRequest):
             "Authorization": f"Bearer {VERCEL_TOKEN}",
             "Content-Type": "application/json"
         }
-        repo_path = f"{user.login}/{project_uuid}"
+        repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
 
+        # Cria o projeto na Vercel
         project_resp = requests.post(
             "https://api.vercel.com/v11/projects",
             headers=headers,
@@ -420,24 +418,25 @@ def generate_project(req: GenRequest):
                 "name": project_uuid,
                 "gitRepository": {"type": "github", "repo": repo_path},
                 "framework": "nextjs",
-                "rootDirectory": None,
+                "rootDirectory": f"containers/{project_uuid}",
+                "skipGitConnectDuringLink": True,
                 "installCommand": "npm install",
                 "buildCommand": "npm run build",
-                "outputDirectory": ".next"
+                "outputDirectory": ".next",
+                "enablePreviewFeedback": True,
+                "enableProductionFeedback": True
             }
         )
         project_resp.raise_for_status()
 
         # --------------------------
-        # 9️⃣ Commit fake → dispara deploy
+        # 8️⃣ Commit fake para disparar deploy
         # --------------------------
-        repo.create_file(".vercel_trigger", "Trigger deploy", "Genesis deploy trigger", branch="main")
-
-        github_repo_url = f"https://github.com/{user.login}/{project_uuid}.git"
-        vercel_url = f"https://{project_uuid}.vercel.app"
+        fake_file_path = f"containers/{project_uuid}/.vercel_trigger"
+        repo.create_file(fake_file_path, "Trigger Vercel Deploy", "Deploy trigger", branch="main")
 
         # --------------------------
-        # 🔟 Registrar projeto no Supabase
+        # 9️⃣ Registrar projeto no Supabase
         # --------------------------
         supabase_insert("projects", [{
             "id": project_uuid,
@@ -447,7 +446,7 @@ def generate_project(req: GenRequest):
             "prompt": req.prompt,
             "llm_output": json.dumps(files),
             "github_commit_url": github_repo_url,
-            "vercel_url": vercel_url,
+            "vercel_url": f"https://{project_uuid}.vercel.app",
             "status": "deployed",
             "created_at": now
         }])
@@ -457,9 +456,10 @@ def generate_project(req: GenRequest):
             "files": list(files.keys()),
             "saved_path": base_path,
             "github_commit_url": github_repo_url,
-            "vercel_url": vercel_url
+            "vercel_url": f"https://{project_uuid}.vercel.app"
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 

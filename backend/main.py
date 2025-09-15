@@ -313,8 +313,9 @@ def generate_project(req: GenRequest):
                              [{"role": h["role"], "content": h["content"]} for h in history] + \
                              [{"role": "user", "content": req.prompt}]
 
-
+        # --------------------------
         # 2️⃣ Chamar OpenAI para gerar arquivos do projeto
+        # --------------------------
         content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=12000)
 
         # 🔹 Fallback seguro para JSON inválido
@@ -327,8 +328,8 @@ def generate_project(req: GenRequest):
             except:
                 files = {"app/page.tsx": content}
 
-        # garante que todos os paths são strings corretas
         files = {str(Path(k)): v for k, v in files.items()}
+
         # --------------------------
         # 3️⃣ Gerar UUID do projeto
         # --------------------------
@@ -355,11 +356,12 @@ def generate_project(req: GenRequest):
         base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
 
         # --------------------------
-        # 6️⃣ Criar repo GitHub e commit inicial
+        # 6️⃣ Criar repo GitHub com nome = UUID e commit inicial
         # --------------------------
         if not gh:
             raise RuntimeError("GitHub client not configured")
-        user = gh.get_user()
+
+        user = gh.get_user("devrenanferrari")  # força apontar para seu usuário
         repo = user.create_repo(name=project_uuid, private=True, auto_init=True)
 
         elements = [
@@ -372,7 +374,7 @@ def generate_project(req: GenRequest):
         parent = repo.get_git_commit(source.commit.sha)
         commit = repo.create_git_commit(f"Genesis project {project_uuid}", tree, [parent])
         repo.get_git_ref("heads/main").edit(commit.sha)
-        github_repo_url = f"https://github.com/{user.login}/{project_uuid}.git"
+        github_repo_url = f"https://github.com/devrenanferrari/{project_uuid}.git"
 
         # --------------------------
         # 7️⃣ Criar projeto na Vercel
@@ -383,9 +385,8 @@ def generate_project(req: GenRequest):
             "Authorization": f"Bearer {VERCEL_TOKEN}",
             "Content-Type": "application/json"
         }
-        repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
+        repo_path = f"devrenanferrari/{project_uuid}"
 
-        # Cria o projeto na Vercel
         project_resp = requests.post(
             "https://api.vercel.com/v11/projects",
             headers=headers,
@@ -404,7 +405,7 @@ def generate_project(req: GenRequest):
         )
         project_resp.raise_for_status()
 
-                # --------------------------
+        # --------------------------
         # 8️⃣ Commit fake para disparar deploy
         # --------------------------
         repo.create_file(".vercel_trigger", "Trigger Vercel Deploy", "Deploy trigger", branch="main")

@@ -280,39 +280,12 @@ def chat_send(req: ChatRequest):
     ])
     return {"success": True, "response": answer}
 
-from fastapi import FastAPI, HTTPException
-from pathlib import Path
-import json, ast, uuid, requests
-from datetime import datetime
-
-app = FastAPI()
-
-# --------------------------
-# Função para salvar arquivos no disco
-# --------------------------
-def save_files_to_disk(project_uuid, user_id, session_id, files):
-    base_path = Path(f"./projects/{user_id}/{session_id}/{project_uuid}")
-    base_path.mkdir(parents=True, exist_ok=True)
-
-    for path, content in files.items():
-        file_path = base_path / path
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # converte dicts em JSON strings
-        if isinstance(content, dict):
-            content = json.dumps(content, indent=2, ensure_ascii=False)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-    return str(base_path)
-
-# --------------------------
-# Endpoint para gerar projeto
-# --------------------------
 @app.post("/generate_project")
 def generate_project(req: GenRequest):
     try:
+        # --------------------------
         # 1️⃣ Buscar histórico do chat
+        # --------------------------
         history = supabase_select(
             "chat_history",
             filters=[("eq", "session_id", req.session_id)],
@@ -322,19 +295,14 @@ def generate_project(req: GenRequest):
                              [{"role": h["role"], "content": h["content"]} for h in history] + \
                              [{"role": "user", "content": req.prompt}]
 
+
         # 2️⃣ Chamar OpenAI para gerar arquivos do projeto
         content, _ = call_openai_with_messages(messages_for_model, temperature=0.2, max_tokens=4000)
 
-        # 3️⃣ Parsing seguro do JSON
+        # 🔹 Fallback seguro para JSON inválido
         files = {}
         try:
             files = json.loads(content)
-            # deserializa conteúdos internos
-            for k, v in files.items():
-                try:
-                    files[k] = json.loads(v)
-                except:
-                    files[k] = v
         except json.JSONDecodeError:
             try:
                 files = ast.literal_eval(content)
@@ -343,12 +311,15 @@ def generate_project(req: GenRequest):
 
         # garante que todos os paths são strings corretas
         files = {str(Path(k)): v for k, v in files.items()}
-
-        # 4️⃣ Gerar UUID do projeto
+        # --------------------------
+        # 3️⃣ Gerar UUID do projeto
+        # --------------------------
         project_uuid = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
 
-        # 5️⃣ Salvar arquivos no Supabase
+        # --------------------------
+        # 4️⃣ Salvar arquivos no Supabase
+        # --------------------------
         rows = [
             {
                 "session_id": req.session_id,
@@ -360,11 +331,13 @@ def generate_project(req: GenRequest):
         ]
         supabase_insert("project_files", rows)
 
-        # 6️⃣ Salvar arquivos localmente
+        # --------------------------
+        # 5️⃣ Salvar arquivos localmente
+        # --------------------------
         base_path = save_files_to_disk(project_uuid, req.user_id, req.session_id, files)
 
         # --------------------------
-        # 7️⃣ Criar repo GitHub e commit inicial
+        # 6️⃣ Criar repo GitHub e commit inicial
         # --------------------------
         if not gh:
             raise RuntimeError("GitHub client not configured")
@@ -372,7 +345,7 @@ def generate_project(req: GenRequest):
         repo = user.create_repo(name=project_uuid, private=True, auto_init=True)
 
         elements = [
-            InputGitTreeElement(path, "100644", "blob", content if isinstance(content, str) else json.dumps(content))
+            InputGitTreeElement(path, "100644", "blob", content)
             for path, content in files.items()
         ]
         source = repo.get_branch("main")
@@ -384,13 +357,17 @@ def generate_project(req: GenRequest):
         github_repo_url = f"https://github.com/{user.login}/{project_uuid}.git"
 
         # --------------------------
-        # 8️⃣ Criar projeto na Vercel
+        # 7️⃣ Criar projeto na Vercel
         # --------------------------
         if not VERCEL_TOKEN:
             raise RuntimeError("Vercel token not set")
-        headers = {"Authorization": f"Bearer {VERCEL_TOKEN}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {VERCEL_TOKEN}",
+            "Content-Type": "application/json"
+        }
         repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
 
+        # Cria o projeto na Vercel
         project_resp = requests.post(
             "https://api.vercel.com/v11/projects",
             headers=headers,
@@ -409,10 +386,14 @@ def generate_project(req: GenRequest):
         )
         project_resp.raise_for_status()
 
-        # 9️⃣ Commit fake para disparar deploy
+                # --------------------------
+        # 8️⃣ Commit fake para disparar deploy
+        # --------------------------
         repo.create_file(".vercel_trigger", "Trigger Vercel Deploy", "Deploy trigger", branch="main")
 
-        # 10️⃣ Registrar projeto no Supabase
+        # --------------------------
+        # 9️⃣ Registrar projeto no Supabase
+        # --------------------------
         supabase_insert("projects", [{
             "id": project_uuid,
             "user_id": req.user_id,

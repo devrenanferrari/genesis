@@ -325,143 +325,173 @@ def try_extract_content_from_diff(diff_text: str) -> Optional[str]:
 # =========================
 @app.post("/generate_project")
 def generate_project(request: Request, req: GenRequest):
-
     def event_stream():
         latest_file_contents: Dict[str, str] = {}
         github_repo_url = None
         vercel_url = None
-        project_uuid = None
+        project_uuid = str(uuid.uuid4())
         buffer = ""
 
         try:
-            # Buscar histórico e preparar mensagens
-            history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at") or []
+            # 1️⃣ Buscar histórico
+            try:
+                history = supabase_select("chat_history", filters=[("eq", "session_id", req.session_id)], order_by="created_at")
+            except Exception:
+                history = []
+
             messages_for_model = [{"role": "system", "content": get_system_prompt("generate_project")}] + \
                                  [{"role": h["role"], "content": h["content"]} for h in history] + \
                                  [{"role": "user", "content": req.prompt}]
-            
-            # Iniciar stream OpenAI
-            stream_resp = openai.chat.completions.create(
-                model="gpt-4o",
-                messages=messages_for_model,
-                stream=True,
-                temperature=0.2,
-                max_tokens=4000
-            )
 
-            # Iterar chunks
+            # 2️⃣ Iniciar stream OpenAI
+            try:
+                stream_resp = openai.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages_for_model,
+                    stream=True,
+                    temperature=0.2,
+                    max_tokens=4000
+                )
+            except Exception as e:
+                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                return
+
+            # 3️⃣ Iterar pelo stream
             for chunk in stream_resp:
-                text_piece = getattr(chunk.choices[0], "delta", {}).get("content", "")
+                text_piece = ""
+                try:
+                    if hasattr(chunk, "choices") and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta if hasattr(chunk.choices[0], "delta") else chunk.choices[0].get("delta", {})
+                        if isinstance(delta, dict):
+                            text_piece = delta.get("content", "") or delta.get("text", "")
+                        else:
+                            text_piece = getattr(chunk.choices[0], "text", "") or ""
+                    else:
+                        text_piece = getattr(chunk, "text", "") or ""
+                except Exception:
+                    text_piece = str(chunk)
+
                 if not text_piece:
                     continue
 
+                # SSE stream parcial
                 yield f"data: {json.dumps({'delta': text_piece})}\n\n"
+
+                # Acumular buffer
                 buffer += text_piece
                 lines = buffer.split("\n")
-                complete_lines, buffer = lines[:-1], lines[-1]
+                complete_lines = lines[:-1]
+                buffer = lines[-1]
 
                 for ln in complete_lines:
                     ln = ln.strip()
                     if not ln:
                         continue
+                    parsed = None
                     try:
                         parsed = json.loads(ln)
-                    except:
-                        parsed = None
+                    except json.JSONDecodeError:
+                        try:
+                            parsed = ast.literal_eval(ln)
+                        except Exception:
+                            parsed = None
                     if not parsed or not isinstance(parsed, dict):
                         continue
 
                     event_type = parsed.get("type")
                     now = datetime.utcnow().isoformat()
 
-                    if event_type == "patch":
+                    if event_type == "thought":
+                        try:
+                            supabase_insert("chat_history", [{
+                                "session_id": req.session_id,
+                                "user_id": req.user_id,
+                                "role": "assistant",
+                                "content": parsed.get("content", ""),
+                                "created_at": now
+                            }])
+                        except Exception:
+                            pass
+
+                    elif event_type == "patch":
                         file_path = parsed.get("file")
                         content = parsed.get("content")
                         diff = parsed.get("diff")
-                        saved_content = content or try_extract_content_from_diff(diff) or ""
-                        latest_file_contents[file_path] = saved_content
-                        # Persistir no Supabase
+                        saved_content = content or try_extract_content_from_diff(diff)
+                        if saved_content and file_path:
+                            latest_file_contents[file_path] = saved_content
                         try:
                             supabase_insert("project_files", [{
                                 "session_id": req.session_id,
                                 "user_id": req.user_id,
                                 "file_path": file_path,
-                                "content": saved_content,
-                                "diff": diff or "",
+                                "content": saved_content if saved_content else "",
+                                "diff": diff if diff else "",
                                 "created_at": now
                             }])
-                        except:
+                        except Exception:
                             pass
 
                     elif event_type == "commit":
-                        # Criar project_uuid se ainda não existir
-                        if not project_uuid:
-                            project_uuid = str(uuid.uuid4())
-                        # Salvar arquivos localmente
-                        save_files_to_disk(project_uuid, req.user_id, req.session_id, latest_file_contents)
-
-                        # GitHub commit (opcional)
-                        if gh:
-                            try:
+                        try:
+                            # salvar localmente
+                            save_files_to_disk(project_uuid, req.user_id, req.session_id, latest_file_contents)
+                            # criar repo GitHub se token disponível
+                            if gh:
                                 user = gh.get_user()
                                 created_repo = user.create_repo(name=project_uuid, private=True, auto_init=True)
-                                for path, content in latest_file_contents.items():
-                                    created_repo.create_file(path, f"Add {path}", content, branch=GITHUB_BRANCH)
+                                elements = [InputGitTreeElement(p, "100644", "blob", c) for p, c in latest_file_contents.items()]
+                                for p, c in latest_file_contents.items():
+                                    created_repo.create_file(p, f"Add {p}", c, branch=GITHUB_BRANCH)
                                 github_repo_url = f"https://github.com/{user.login}/{project_uuid}.git"
-                            except:
-                                github_repo_url = None
 
-                        # Vercel deploy (opcional)
-                        if VERCEL_TOKEN:
+                            # criar projeto Vercel se token disponível
+                            if VERCEL_TOKEN:
+                                try:
+                                    headers = {"Authorization": f"Bearer {VERCEL_TOKEN}", "Content-Type": "application/json"}
+                                    payload = {"name": project_uuid, "framework": "nextjs", "installCommand": "npm install",
+                                               "buildCommand": "npm run build", "outputDirectory": ".next"}
+                                    if github_repo_url:
+                                        repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
+                                        payload["gitRepository"] = {"type": "github", "repo": repo_path}
+                                        payload["skipGitConnectDuringLink"] = True
+                                    r = requests.post("https://api.vercel.com/v11/projects", headers=headers, json=payload, timeout=30)
+                                    r.raise_for_status()
+                                    vercel_url = f"https://{project_uuid}.vercel.app"
+                                except Exception:
+                                    vercel_url = None
+
+                            # registrar projeto no Supabase
                             try:
-                                headers = {"Authorization": f"Bearer {VERCEL_TOKEN}", "Content-Type": "application/json"}
-                                payload = {"name": project_uuid, "framework": "nextjs", "installCommand": "npm install",
-                                           "buildCommand": "npm run build", "outputDirectory": ".next"}
-                                if github_repo_url:
-                                    repo_path = github_repo_url.split("https://github.com/")[-1].replace(".git", "")
-                                    payload["gitRepository"] = {"type": "github", "repo": repo_path}
-                                    payload["skipGitConnectDuringLink"] = True
-                                r = requests.post("https://api.vercel.com/v11/projects", headers=headers, json=payload, timeout=30)
-                                r.raise_for_status()
-                                vercel_url = f"https://{project_uuid}.vercel.app"
-                            except:
-                                vercel_url = None
+                                supabase_insert("projects", [{
+                                    "id": project_uuid,
+                                    "user_id": req.user_id,
+                                    "project_id": req.session_id,
+                                    "uuid": project_uuid,
+                                    "prompt": req.prompt,
+                                    "llm_output": json.dumps(list(latest_file_contents.keys())),
+                                    "github_commit_url": github_repo_url or "",
+                                    "vercel_url": vercel_url or "",
+                                    "status": "deployed" if vercel_url else "created",
+                                    "created_at": datetime.utcnow().isoformat()
+                                }])
+                            except Exception:
+                                pass
 
-                        # Persistir projeto no Supabase
-                        try:
-                            supabase_insert("projects", [{
-                                "id": project_uuid,
-                                "user_id": req.user_id,
-                                "project_id": req.session_id,
-                                "uuid": project_uuid,
-                                "prompt": req.prompt,
-                                "llm_output": json.dumps(list(latest_file_contents.keys())),
-                                "github_commit_url": github_repo_url or "",
-                                "vercel_url": vercel_url or "",
-                                "status": "deployed" if vercel_url else "created",
-                                "created_at": datetime.utcnow().isoformat()
-                            }])
-                        except:
-                            pass
+                            # enviar evento commit para o cliente
+                            yield f"event: commit\ndata: {json.dumps({'status':'ok','project_uuid': project_uuid,'github': github_repo_url,'vercel': vercel_url})}\n\n"
 
-                        # Notificar cliente commit ok
-                        yield f"event: commit\ndata: {json.dumps({'status':'ok','project_uuid': project_uuid,'github': github_repo_url,'vercel': vercel_url})}\n\n"
+                        except Exception as e:
+                            yield f"event: commit_error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
-            # ===== FIM DO STREAM =====
-            # Enviar JSON final com todos os arquivos e URLs
-            final_payload = {
-                "status": "done",
-                "project_uuid": project_uuid,
-                "files": latest_file_contents,
-                "github_commit_url": github_repo_url,
-                "vercel_url": vercel_url
-            }
-            yield f"data: {json.dumps(final_payload)}\n\n"
+            # ✅ Evento final: enviar JSON completo
+            yield f"event: done\ndata: {json.dumps({'status': 'stream_ended','files': latest_file_contents,'github_commit_url': github_repo_url,'vercel_url': vercel_url,'project_uuid': project_uuid})}\n\n"
 
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 
 
